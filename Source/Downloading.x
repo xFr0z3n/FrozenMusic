@@ -310,8 +310,11 @@ static NSArray<UIViewController *> *YTMUControllersAround(UIView *view) {
             [controllers addObject:current];
     }
     for (UIResponder *responder = view; responder && controllers.count < 12; responder = responder.nextResponder) {
-        if ([responder isKindOfClass:[UIViewController class]] && ![controllers containsObject:responder])
-            [controllers addObject:(UIViewController *)responder];
+        if (![responder isKindOfClass:[UIViewController class]])
+            continue;
+        UIViewController *controller = (UIViewController *)responder;
+        if (![controllers containsObject:controller])
+            [controllers addObject:controller];
     }
     return controllers;
 }
