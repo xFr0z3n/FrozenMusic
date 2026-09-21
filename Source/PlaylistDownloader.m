@@ -29,24 +29,99 @@ static NSURLSession *YTMUSession(void) {
 }
 
 // Synchronous request (only ever called from the background work queue)
-static NSData *YTMUSendRequest(NSURLRequest *request, NSInteger *statusOut) {
+static NSData *YTMUSendRequestFull(NSURLRequest *request, NSInteger *statusOut, NSDictionary **headersOut) {
     __block NSData *result = nil;
     __block NSInteger status = 0;
+    __block NSDictionary *headers = nil;
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
 
     NSURLSessionDataTask *task = [YTMUSession() dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (!error)
             result = data;
-        if ([response isKindOfClass:[NSHTTPURLResponse class]])
+        if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
             status = ((NSHTTPURLResponse *)response).statusCode;
+            headers = ((NSHTTPURLResponse *)response).allHeaderFields;
+        }
         dispatch_semaphore_signal(semaphore);
     }];
     [task resume];
-    dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(45 * NSEC_PER_SEC)));
+    if (dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(180 * NSEC_PER_SEC))) != 0)
+        [task cancel];
 
     if (statusOut)
         *statusOut = status;
+    if (headersOut)
+        *headersOut = headers;
     return result;
+}
+
+static NSData *YTMUSendRequest(NSURLRequest *request, NSInteger *statusOut) {
+    return YTMUSendRequestFull(request, statusOut, NULL);
+}
+
+// Downloads a googlevideo audio file in 10 MB pieces (avoids YouTube's throttling)
+static BOOL YTMUDownloadInChunks(NSString *urlString, NSString *userAgent, NSString *path, BOOL (^isCancelled)(void)) {
+    NSURL *url = urlString.length ? [NSURL URLWithString:urlString] : nil;
+    if (!url)
+        return NO;
+
+    [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!handle)
+        return NO;
+
+    const long long chunkSize = 10 * 1024 * 1024;
+    long long offset = 0;
+    long long total = -1;
+    BOOL success = NO;
+
+    for (int round = 0; round < 200; round++) {
+        if (isCancelled && isCancelled())
+            break;
+
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+        [request setValue:[NSString stringWithFormat:@"bytes=%lld-%lld", offset, offset + chunkSize - 1] forHTTPHeaderField:@"Range"];
+        if (userAgent.length)
+            [request setValue:userAgent forHTTPHeaderField:@"User-Agent"];
+
+        NSInteger status = 0;
+        NSDictionary *headers = nil;
+        NSData *data = YTMUSendRequestFull(request, &status, &headers);
+        if (data.length == 0 || (status != 200 && status != 206))
+            break;
+
+        [handle writeData:data];
+        offset += (long long)data.length;
+
+        if (status == 200) { // server sent the whole file at once
+            success = YES;
+            break;
+        }
+
+        // "Content-Range: bytes 0-10485759/3456789"
+        NSString *contentRange = nil;
+        for (NSString *key in headers) {
+            if ([key caseInsensitiveCompare:@"Content-Range"] == NSOrderedSame)
+                contentRange = headers[key];
+        }
+        NSRange slash = [contentRange rangeOfString:@"/" options:NSBackwardsSearch];
+        if (slash.location != NSNotFound)
+            total = [[contentRange substringFromIndex:slash.location + 1] longLongValue];
+
+        if (total > 0 && offset >= total) {
+            success = YES;
+            break;
+        }
+        if (total <= 0 && (long long)data.length < chunkSize) {
+            success = YES; // unknown size, short piece = last piece
+            break;
+        }
+    }
+
+    [handle closeFile];
+    if (!success)
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    return success;
 }
 
 static NSData *YTMUGet(NSString *urlString) {
@@ -241,6 +316,11 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
 @property (nonatomic, copy) NSString *deviceModel;
 @property (nonatomic, copy) NSString *systemVersion;
 @property (nonatomic, copy) NSString *appVersion;
+// Filled while loading: album pages get real album tags, playlists use the playlist name
+@property (nonatomic) BOOL isAlbum;
+@property (nonatomic, copy) NSString *albumArtist;
+@property (nonatomic, copy) NSString *albumYear;
+@property (nonatomic, copy) NSString *albumCoverURL;
 @end
 
 @implementation YTMUPlaylistDownloader
@@ -342,13 +422,20 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
         [self showMessage:@"Playlist download already running" details:nil icon:nil];
         return;
     }
-    if (![browseID hasPrefix:@"VL"]) {
-        [self showMessage:LOC(@"OOPS") details:@"Only playlists are supported for now" icon:@"xmark"];
+    // PL... / OLAK5uy_... (album as playlist) -> VL..., albums stay MPREb_...
+    if ([browseID hasPrefix:@"PL"] || [browseID hasPrefix:@"OLAK5uy_"] || [browseID hasPrefix:@"RD"])
+        browseID = [@"VL" stringByAppendingString:browseID];
+    if (![browseID hasPrefix:@"VL"] && ![browseID hasPrefix:@"MPREb_"]) {
+        [self showMessage:LOC(@"OOPS") details:@"This page type isn't supported" icon:@"xmark"];
         return;
     }
 
     self.running = YES;
     self.cancelled = NO;
+    self.isAlbum = [browseID hasPrefix:@"MPREb_"];
+    self.albumArtist = nil;
+    self.albumYear = nil;
+    self.albumCoverURL = nil;
 
     // Device info is read here on the main thread
     struct utsname systemInfo;
@@ -369,7 +456,7 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
                 return;
             }
             if (tracks.count == 0) {
-                [self finishWithMessage:LOC(@"OOPS") details:@"Couldn't load the playlist (private playlists aren't supported yet)" icon:@"xmark"];
+                [self finishWithMessage:LOC(@"OOPS") details:@"Couldn't load the songs (private playlists aren't supported yet)" icon:@"xmark"];
                 return;
             }
             [self confirmDownloadOfTracks:tracks title:title ?: @"Playlist"];
@@ -406,18 +493,48 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     if (!response)
         return tracks;
 
-    // Title from the page header
+    // Title (+ artist and year for albums) from the page header
     for (NSString *headerKey in @[@"musicResponsiveHeaderRenderer", @"musicDetailHeaderRenderer", @"musicEditablePlaylistDetailHeaderRenderer"]) {
-        NSString *title = YTMUText(YTMUFindFirst(YTMUFindFirst(response, headerKey), @"title"));
-        if (title.length) {
-            if (titleOut)
-                *titleOut = title;
-            break;
+        id header = YTMUFindFirst(response, headerKey);
+        NSString *title = YTMUText(YTMUFindFirst(header, @"title"));
+        if (!title.length)
+            continue;
+        if (titleOut)
+            *titleOut = title;
+
+        if (self.isAlbum) {
+            // Artist: "straplineTextOne" (new layout) or the linked run in the subtitle
+            NSString *artist = YTMUText(YTMUFindFirst(header, @"straplineTextOne"));
+            NSArray *runs = YTMUPath(YTMUFindFirst(header, @"subtitle"), @[@"runs"]);
+            if (!artist.length && [runs isKindOfClass:[NSArray class]]) {
+                for (NSDictionary *run in runs) {
+                    if ([run isKindOfClass:[NSDictionary class]] && run[@"navigationEndpoint"] && [run[@"text"] isKindOfClass:[NSString class]]) {
+                        artist = run[@"text"];
+                        break;
+                    }
+                }
+            }
+            if (artist.length)
+                self.albumArtist = artist;
+
+            // Year: any 4-digit year in the subtitle ("Album • 2013")
+            NSString *subtitle = YTMUText(YTMUFindFirst(header, @"subtitle"));
+            NSRegularExpression *yearRegex = [NSRegularExpression regularExpressionWithPattern:@"\\b(19|20)\\d{2}\\b" options:0 error:nil];
+            NSTextCheckingResult *year = subtitle ? [yearRegex firstMatchInString:subtitle options:0 range:NSMakeRange(0, subtitle.length)] : nil;
+            if (year)
+                self.albumYear = [subtitle substringWithRange:year.range];
+
+            // One cover for every song of the album
+            NSArray *thumbnails = YTMUFindFirst(header, @"thumbnails");
+            NSString *coverURL = [thumbnails isKindOfClass:[NSArray class]] ? YTMUPath(thumbnails, @[@-1, @"url"]) : nil;
+            if ([coverURL isKindOfClass:[NSString class]])
+                self.albumCoverURL = YTMUBigThumbnail(coverURL);
         }
+        break;
     }
 
-    // Only look inside the playlist's track list, not suggestions etc.
-    id scope = YTMUFindFirst(response, @"musicPlaylistShelfRenderer") ?: response;
+    // Only look inside the track list, not suggestions etc.
+    id scope = YTMUFindFirst(response, self.isAlbum ? @"musicShelfRenderer" : @"musicPlaylistShelfRenderer") ?: response;
     NSInteger position = 0;
     NSString *previousToken = nil;
 
@@ -470,28 +587,59 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
         });
     }
 
+    // Album page without a readable track list: load the album's playlist form instead
+    if (self.isAlbum && [browseID hasPrefix:@"MPREb_"] && tracks.count == 0 && !self.cancelled) {
+        NSString *audioPlaylistID = YTMUFindFirst(response, @"audioPlaylistId");
+        if ([audioPlaylistID isKindOfClass:[NSString class]] && audioPlaylistID.length) {
+            NSString *albumTitle = titleOut ? *titleOut : nil;
+            NSArray<YTMUPlaylistTrack *> *fallback = [self fetchPlaylist:[@"VL" stringByAppendingString:audioPlaylistID] title:titleOut];
+            if (albumTitle.length && titleOut)
+                *titleOut = albumTitle; // keep the album name
+            return fallback;
+        }
+    }
+
     return tracks;
 }
 
 #pragma mark Stream lookup (InnerTube iOS API)
 
-- (NSDictionary *)playerResponseForVideoID:(NSString *)videoID reason:(NSString **)reasonOut {
+// Finds audio for a video. Returns the player response and fills:
+//   hlsURL    - HLS audio playlist (best, same as the single-song download), or
+//   directURL - plain AAC m4a file (format 140) + the user agent to fetch it with
+- (NSDictionary *)streamForVideoID:(NSString *)videoID
+                            hlsURL:(NSString **)hlsOut
+                         directURL:(NSString **)directOut
+                         userAgent:(NSString **)userAgentOut
+                            reason:(NSString **)reasonOut {
     NSString *osUnderscore = [self.systemVersion stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+    NSString *vrUserAgent = @"com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
+
     NSArray<NSDictionary *> *clients = @[
         @{@"name": @"IOS_MUSIC", @"id": @"26", @"version": self.appVersion,
-          @"ua": [NSString stringWithFormat:@"com.google.ios.youtubemusic/%@ (%@; U; CPU iOS %@ like Mac OS X;)", self.appVersion, self.deviceModel, osUnderscore]},
+          @"ua": [NSString stringWithFormat:@"com.google.ios.youtubemusic/%@ (%@; U; CPU iOS %@ like Mac OS X;)", self.appVersion, self.deviceModel, osUnderscore],
+          @"client": @{@"deviceMake": @"Apple", @"deviceModel": self.deviceModel, @"osName": @"iPhone", @"osVersion": self.systemVersion}},
         @{@"name": @"IOS", @"id": @"5", @"version": @"20.10.4",
-          @"ua": [NSString stringWithFormat:@"com.google.ios.youtube/20.10.4 (%@; U; CPU iOS %@ like Mac OS X;)", self.deviceModel, osUnderscore]}
+          @"ua": [NSString stringWithFormat:@"com.google.ios.youtube/20.10.4 (%@; U; CPU iOS %@ like Mac OS X;)", self.deviceModel, osUnderscore],
+          @"client": @{@"deviceMake": @"Apple", @"deviceModel": self.deviceModel, @"osName": @"iPhone", @"osVersion": self.systemVersion}},
+        @{@"name": @"ANDROID_VR", @"id": @"28", @"version": @"1.62.27",
+          @"ua": vrUserAgent,
+          @"client": @{@"deviceMake": @"Oculus", @"deviceModel": @"Quest 3", @"androidSdkVersion": @32, @"osName": @"Android", @"osVersion": @"12L"}}
     ];
 
-    NSString *lastReason = @"no stream";
+    NSMutableArray<NSString *> *reasons = [NSMutableArray array];
     for (NSDictionary *client in clients) {
+        if (self.cancelled)
+            break;
+
+        NSMutableDictionary *clientContext = [client[@"client"] mutableCopy];
+        clientContext[@"clientName"] = client[@"name"];
+        clientContext[@"clientVersion"] = client[@"version"];
+        clientContext[@"hl"] = @"en";
+        clientContext[@"gl"] = @"US";
+
         NSDictionary *body = @{
-            @"context": @{@"client": @{
-                @"clientName": client[@"name"], @"clientVersion": client[@"version"],
-                @"deviceMake": @"Apple", @"deviceModel": self.deviceModel,
-                @"osName": @"iPhone", @"osVersion": self.systemVersion,
-                @"hl": @"en", @"gl": @"US"}},
+            @"context": @{@"client": clientContext},
             @"videoId": videoID,
             @"contentCheckOk": @YES,
             @"racyCheckOk": @YES
@@ -503,16 +651,58 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
         };
 
         NSDictionary *response = YTMUPostJSON(@"https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false", body, headers);
-        NSString *hls = YTMUPath(response, @[@"streamingData", @"hlsManifestUrl"]);
-        if ([hls isKindOfClass:[NSString class]] && hls.length)
-            return response;
 
-        NSString *reason = YTMUPath(response, @[@"playabilityStatus", @"reason"]) ?: YTMUPath(response, @[@"playabilityStatus", @"status"]);
-        lastReason = [NSString stringWithFormat:@"%@: %@", client[@"name"], [reason isKindOfClass:[NSString class]] ? reason : (response ? @"no stream" : @"request failed")];
+        // HLS first
+        NSString *hls = YTMUPath(response, @[@"streamingData", @"hlsManifestUrl"]);
+        if ([hls isKindOfClass:[NSString class]] && hls.length) {
+            if (hlsOut)
+                *hlsOut = hls;
+            return response;
+        }
+
+        // Plain AAC file: format 140, else best other audio/mp4 with a direct link
+        NSArray *formats = YTMUPath(response, @[@"streamingData", @"adaptiveFormats"]);
+        NSString *best = nil;
+        NSInteger bestBitrate = -1;
+        BOOL sawCiphered = NO;
+        if ([formats isKindOfClass:[NSArray class]]) {
+            for (NSDictionary *format in formats) {
+                if (![format isKindOfClass:[NSDictionary class]])
+                    continue;
+                NSString *mime = format[@"mimeType"];
+                if (![mime isKindOfClass:[NSString class]] || ![mime hasPrefix:@"audio/mp4"])
+                    continue;
+                NSString *url = format[@"url"];
+                if (![url isKindOfClass:[NSString class]]) {
+                    if (format[@"signatureCipher"] || format[@"cipher"])
+                        sawCiphered = YES;
+                    continue;
+                }
+                NSInteger bitrate = [format[@"itag"] integerValue] == 140 ? NSIntegerMax : [format[@"bitrate"] integerValue];
+                if (bitrate > bestBitrate) {
+                    best = url;
+                    bestBitrate = bitrate;
+                }
+            }
+        }
+        if (best) {
+            if (directOut)
+                *directOut = best;
+            if (userAgentOut)
+                *userAgentOut = client[@"ua"];
+            return response;
+        }
+
+        NSString *status = YTMUPath(response, @[@"playabilityStatus", @"reason"]) ?: YTMUPath(response, @[@"playabilityStatus", @"status"]);
+        NSString *what = !response ? @"request failed"
+                       : ![status isKindOfClass:[NSString class]] ? @"no status"
+                       : [status isEqualToString:@"OK"] ? (sawCiphered ? @"OK, only protected links" : @"OK, no audio links")
+                       : status;
+        [reasons addObject:[NSString stringWithFormat:@"%@: %@", client[@"name"], what]];
     }
 
     if (reasonOut)
-        *reasonOut = lastReason;
+        *reasonOut = [reasons componentsJoinedByString:@"; "];
     return nil;
 }
 
@@ -613,19 +803,34 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
                 continue;
             }
 
-            // 1. Stream
-            NSString *reason = nil;
-            NSDictionary *player = [self playerResponseForVideoID:track.videoID reason:&reason];
-            NSString *manifestURL = YTMUPath(player, @[@"streamingData", @"hlsManifestUrl"]);
-            NSString *audioURL = manifestURL ? YTMUAudioURLFromManifest(YTMUGet(manifestURL)) : nil;
+            // 1. Stream: HLS if YouTube offers it, else the plain AAC file
+            NSString *reason = nil, *hlsURL = nil, *directURL = nil, *userAgent = nil;
+            NSDictionary *player = [self streamForVideoID:track.videoID hlsURL:&hlsURL directURL:&directURL userAgent:&userAgent reason:&reason];
+            NSString *audioURL = hlsURL ? YTMUAudioURLFromManifest(YTMUGet(hlsURL)) : nil;
+            NSString *rawPath = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"%@_raw.m4a", track.videoID]];
+
+            if (!audioURL && directURL) {
+                __weak __typeof(self) weakSelf = self;
+                if (YTMUDownloadInChunks(directURL, userAgent, rawPath, ^BOOL { return weakSelf.cancelled; }))
+                    audioURL = rawPath; // ffmpeg reads the local file and only adds tags
+                else
+                    reason = @"audio download failed";
+            }
             if (!audioURL) {
-                [failures addObject:[NSString stringWithFormat:@"%ld. %@ (%@)", (long)track.position, track.title, reason ?: @"no audio stream"]];
+                if (!self.cancelled)
+                    [failures addObject:[NSString stringWithFormat:@"%ld. %@ (%@)", (long)track.position, track.title, reason ?: @"no audio stream"]];
                 continue;
             }
 
-            // 2. Metadata (album + album artist = playlist name)
+            // 2. Metadata
+            //    playlist: album + album artist = playlist name
+            //    album:    album = album name, album artist = album's artist, year
             id authorValue = YTMUPath(player, @[@"videoDetails", @"author"]);
-            NSString *artist = track.artist.length ? track.artist : ([authorValue isKindOfClass:[NSString class]] ? authorValue : nil);
+            NSString *artist = track.artist.length ? track.artist : nil;
+            if (!artist.length && self.isAlbum)
+                artist = self.albumArtist;
+            if (!artist.length && [authorValue isKindOfClass:[NSString class]])
+                artist = authorValue;
             if ([artist hasSuffix:@" - Topic"])
                 artist = [artist substringToIndex:artist.length - 8];
 
@@ -634,7 +839,13 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
             if (artist.length)
                 metadata[@"artist"] = artist;
             metadata[@"album"] = title;
-            metadata[@"album_artist"] = title;
+            if (self.isAlbum) {
+                metadata[@"album_artist"] = self.albumArtist.length ? self.albumArtist : (artist ?: title);
+                if (self.albumYear.length)
+                    metadata[@"date"] = self.albumYear;
+            } else {
+                metadata[@"album_artist"] = title;
+            }
             metadata[@"track"] = [NSString stringWithFormat:@"%ld", (long)track.position];
             metadata[@"comment"] = [NSString stringWithFormat:@"https://music.youtube.com/watch?v=%@", track.videoID];
 
@@ -643,7 +854,7 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
             [fm removeItemAtPath:tempPath error:nil];
 
             NSMutableArray<NSString *> *arguments = [@[@"-y", @"-i", audioURL, @"-map", @"0:a:0", @"-c", @"copy"] mutableCopy];
-            for (NSString *key in @[@"title", @"artist", @"album", @"album_artist", @"track", @"comment"]) {
+            for (NSString *key in @[@"title", @"artist", @"album", @"album_artist", @"track", @"date", @"comment"]) {
                 NSString *value = metadata[key];
                 if (value.length) {
                     [arguments addObject:@"-metadata"];
@@ -653,6 +864,7 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
             [arguments addObject:tempPath];
 
             int returnCode = [MobileFFmpeg executeWithArguments:arguments];
+            [fm removeItemAtPath:rawPath error:nil];
             if (returnCode != RETURN_CODE_SUCCESS) {
                 [fm removeItemAtPath:tempPath error:nil];
                 if (returnCode != RETURN_CODE_CANCEL)
@@ -661,7 +873,7 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
             }
 
             // 4. Cover (browse thumbnail, else video thumbnail)
-            NSString *coverURL = track.thumbnailURL;
+            NSString *coverURL = (self.isAlbum && self.albumCoverURL) ? self.albumCoverURL : track.thumbnailURL;
             if (!coverURL) {
                 NSString *fallback = YTMUPath(player, @[@"videoDetails", @"thumbnail", @"thumbnails", @-1, @"url"]);
                 coverURL = [fallback isKindOfClass:[NSString class]] ? fallback : nil;
