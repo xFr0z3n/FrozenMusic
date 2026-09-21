@@ -19,4 +19,6 @@
 - (void)downloadAudio:(NSString *)audioURL; // old call, no tags
 - (void)downloadImage:(NSURL *)link;
 - (void)shareMedia:(NSURL *)mediaURL;
+// Inserts a JPEG cover into an ffmpeg-written .m4a in place. NO = file untouched.
+- (BOOL)writeCoverAtom:(NSData *)jpegData intoFile:(NSURL *)fileURL;
 @end
