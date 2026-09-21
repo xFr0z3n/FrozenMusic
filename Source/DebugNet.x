@@ -7,6 +7,7 @@
 #import "Utils/MBProgressHUD/MBProgressHUD.h"
 
 static NSMutableArray<NSString *> *ytmuNetLog = nil;
+static NSMutableDictionary<NSString *, NSNumber *> *ytmuPathCounts = nil;
 static NSUInteger ytmuYoutubeiCount = 0;
 
 static NSString *YTMUHexPrefix(NSData *data, NSUInteger count) {
@@ -44,20 +45,41 @@ static void YTMURecordRequest(NSURLRequest *request, NSData *body, NSString *met
     if (![url.absoluteString containsString:@"youtubei"])
         return;
 
+    NSDictionary *h = request.allHTTPHeaderFields;
+
+    // Skip the tweak's own playlist requests (JSON with only 4-5 basic headers)
+    NSString *contentType = h[@"Content-Type"] ?: h[@"content-type"];
+    if ([contentType containsString:@"json"] && h.count <= 5)
+        return;
+
+    // "task resume" duplicates dataTask entries, only count it for the path list
+    BOOL isResume = [method isEqualToString:@"task resume"];
+
     @synchronized ([NSNull class]) {
         if (!ytmuNetLog)
             ytmuNetLog = [NSMutableArray array];
-        ytmuYoutubeiCount++;
+        if (!ytmuPathCounts)
+            ytmuPathCounts = [NSMutableDictionary dictionary];
 
-        if (![url.path containsString:@"player"])
+        if (isResume) {
+            ytmuYoutubeiCount++;
+            NSString *path = url.path ?: @"?";
+            ytmuPathCounts[path] = @(ytmuPathCounts[path].integerValue + 1);
+        }
+
+        NSString *lowerPath = url.path.lowercaseString;
+        BOOL interesting = [lowerPath containsString:@"player"] || [lowerPath containsString:@"watch"];
+        if (!interesting)
             return;
 
+        // Upload tasks carry the body separately, prefer that entry
         NSData *payload = body ?: request.HTTPBody;
-        NSMutableArray *headerNames = [NSMutableArray array];
-        for (NSString *key in request.allHTTPHeaderFields)
-            [headerNames addObject:key];
+        if (isResume && !payload)
+            return;
 
-        NSDictionary *h = request.allHTTPHeaderFields;
+        NSMutableArray *headerNames = [NSMutableArray array];
+        for (NSString *key in h)
+            [headerNames addObject:key];
         NSString *entry = [NSString stringWithFormat:
             @"--- %@ via %@ (%@)\nhost: %@ path: %@\ncontent-type: %@\ncontent-encoding: %@\nclient: %@ %@\nheaders: %@\nbody: %lu bytes%@, starts %@\nvideo-id field: %@",
             method, NSStringFromClass([session class]), [NSDate date],
@@ -73,7 +95,7 @@ static void YTMURecordRequest(NSURLRequest *request, NSData *body, NSString *met
             payload ? YTMUFindVideoIDField(payload) : @"-"];
 
         [ytmuNetLog addObject:entry];
-        if (ytmuNetLog.count > 6)
+        if (ytmuNetLog.count > 8)
             [ytmuNetLog removeObjectAtIndex:0];
     }
 }
@@ -120,8 +142,13 @@ static void YTMURecordRequest(NSURLRequest *request, NSData *body, NSString *met
 
     NSString *report;
     @synchronized ([NSNull class]) {
-        report = [NSString stringWithFormat:@"YTMU net debug\nyoutubei requests seen: %lu\nplayer requests:\n%@",
+        NSMutableArray *paths = [NSMutableArray array];
+        for (NSString *path in [ytmuPathCounts keysSortedByValueUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) { return [b compare:a]; }])
+            [paths addObject:[NSString stringWithFormat:@"%@ x%@", path, ytmuPathCounts[path]]];
+
+        report = [NSString stringWithFormat:@"YTMU net debug v2\napp youtubei requests: %lu\npaths:\n%@\n\nwatch/player requests:\n%@",
                   (unsigned long)ytmuYoutubeiCount,
+                  paths.count ? [paths componentsJoinedByString:@"\n"] : @"(none)",
                   ytmuNetLog.count ? [ytmuNetLog componentsJoinedByString:@"\n"] : @"(none)"];
     }
     [UIPasteboard generalPasteboard].string = report;
