@@ -60,7 +60,7 @@ static NSData *YTMUSendRequest(NSURLRequest *request, NSInteger *statusOut) {
 }
 
 // Downloads a googlevideo audio file in 10 MB pieces (avoids YouTube's throttling)
-static BOOL YTMUDownloadInChunks(NSString *urlString, NSString *userAgent, NSString *path, BOOL (^isCancelled)(void)) {
+static BOOL YTMUDownloadInChunks(NSString *urlString, NSString *userAgent, NSString *path, NSInteger *statusOut, BOOL (^isCancelled)(void)) {
     NSURL *url = urlString.length ? [NSURL URLWithString:urlString] : nil;
     if (!url)
         return NO;
@@ -87,6 +87,8 @@ static BOOL YTMUDownloadInChunks(NSString *urlString, NSString *userAgent, NSStr
         NSInteger status = 0;
         NSDictionary *headers = nil;
         NSData *data = YTMUSendRequestFull(request, &status, &headers);
+        if (statusOut)
+            *statusOut = status;
         if (data.length == 0 || (status != 200 && status != 206))
             break;
 
@@ -604,30 +606,33 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
 
 #pragma mark Stream lookup (InnerTube iOS API)
 
-// Finds audio for a video. Returns the player response and fills:
-//   hlsURL    - HLS audio playlist (best, same as the single-song download), or
-//   directURL - plain AAC m4a file (format 140) + the user agent to fetch it with
-- (NSDictionary *)streamForVideoID:(NSString *)videoID
-                            hlsURL:(NSString **)hlsOut
-                         directURL:(NSString **)directOut
-                         userAgent:(NSString **)userAgentOut
-                            reason:(NSString **)reasonOut {
+// Asks all clients for audio and returns every usable option, best first:
+//   HLS playlists (same as the single-song download), then plain AAC files
+//   (format 140), Android VR first because its links usually need no extra token.
+// Each option: @{@"type": @"hls"/@"direct", @"url": ..., @"ua": ..., @"client": ...}
+- (NSArray<NSDictionary *> *)streamOptionsForVideoID:(NSString *)videoID
+                                              player:(NSDictionary **)playerOut
+                                              reason:(NSString **)reasonOut {
     NSString *osUnderscore = [self.systemVersion stringByReplacingOccurrencesOfString:@"." withString:@"_"];
     NSString *vrUserAgent = @"com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
 
     NSArray<NSDictionary *> *clients = @[
-        @{@"name": @"IOS_MUSIC", @"id": @"26", @"version": self.appVersion,
-          @"ua": [NSString stringWithFormat:@"com.google.ios.youtubemusic/%@ (%@; U; CPU iOS %@ like Mac OS X;)", self.appVersion, self.deviceModel, osUnderscore],
-          @"client": @{@"deviceMake": @"Apple", @"deviceModel": self.deviceModel, @"osName": @"iPhone", @"osVersion": self.systemVersion}},
+        @{@"name": @"ANDROID_VR", @"id": @"28", @"version": @"1.62.27",
+          @"ua": vrUserAgent,
+          @"client": @{@"deviceMake": @"Oculus", @"deviceModel": @"Quest 3", @"androidSdkVersion": @32, @"osName": @"Android", @"osVersion": @"12L"}},
         @{@"name": @"IOS", @"id": @"5", @"version": @"20.10.4",
           @"ua": [NSString stringWithFormat:@"com.google.ios.youtube/20.10.4 (%@; U; CPU iOS %@ like Mac OS X;)", self.deviceModel, osUnderscore],
           @"client": @{@"deviceMake": @"Apple", @"deviceModel": self.deviceModel, @"osName": @"iPhone", @"osVersion": self.systemVersion}},
-        @{@"name": @"ANDROID_VR", @"id": @"28", @"version": @"1.62.27",
-          @"ua": vrUserAgent,
-          @"client": @{@"deviceMake": @"Oculus", @"deviceModel": @"Quest 3", @"androidSdkVersion": @32, @"osName": @"Android", @"osVersion": @"12L"}}
+        @{@"name": @"IOS_MUSIC", @"id": @"26", @"version": self.appVersion,
+          @"ua": [NSString stringWithFormat:@"com.google.ios.youtubemusic/%@ (%@; U; CPU iOS %@ like Mac OS X;)", self.appVersion, self.deviceModel, osUnderscore],
+          @"client": @{@"deviceMake": @"Apple", @"deviceModel": self.deviceModel, @"osName": @"iPhone", @"osVersion": self.systemVersion}}
     ];
 
+    NSMutableArray<NSDictionary *> *hlsOptions = [NSMutableArray array];
+    NSMutableArray<NSDictionary *> *directOptions = [NSMutableArray array];
     NSMutableArray<NSString *> *reasons = [NSMutableArray array];
+    NSDictionary *firstPlayer = nil;
+
     for (NSDictionary *client in clients) {
         if (self.cancelled)
             break;
@@ -651,16 +656,16 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
         };
 
         NSDictionary *response = YTMUPostJSON(@"https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false", body, headers);
+        if (response && !firstPlayer && YTMUPath(response, @[@"videoDetails"]))
+            firstPlayer = response;
 
-        // HLS first
+        BOOL found = NO;
         NSString *hls = YTMUPath(response, @[@"streamingData", @"hlsManifestUrl"]);
         if ([hls isKindOfClass:[NSString class]] && hls.length) {
-            if (hlsOut)
-                *hlsOut = hls;
-            return response;
+            [hlsOptions addObject:@{@"type": @"hls", @"url": hls, @"ua": client[@"ua"], @"client": client[@"name"]}];
+            found = YES;
         }
 
-        // Plain AAC file: format 140, else best other audio/mp4 with a direct link
         NSArray *formats = YTMUPath(response, @[@"streamingData", @"adaptiveFormats"]);
         NSString *best = nil;
         NSInteger bestBitrate = -1;
@@ -686,24 +691,28 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
             }
         }
         if (best) {
-            if (directOut)
-                *directOut = best;
-            if (userAgentOut)
-                *userAgentOut = client[@"ua"];
-            return response;
+            [directOptions addObject:@{@"type": @"direct", @"url": best, @"ua": client[@"ua"], @"client": client[@"name"]}];
+            found = YES;
         }
 
-        NSString *status = YTMUPath(response, @[@"playabilityStatus", @"reason"]) ?: YTMUPath(response, @[@"playabilityStatus", @"status"]);
-        NSString *what = !response ? @"request failed"
-                       : ![status isKindOfClass:[NSString class]] ? @"no status"
-                       : [status isEqualToString:@"OK"] ? (sawCiphered ? @"OK, only protected links" : @"OK, no audio links")
-                       : status;
-        [reasons addObject:[NSString stringWithFormat:@"%@: %@", client[@"name"], what]];
+        if (!found) {
+            NSString *status = YTMUPath(response, @[@"playabilityStatus", @"reason"]) ?: YTMUPath(response, @[@"playabilityStatus", @"status"]);
+            NSString *what = !response ? @"request failed"
+                           : ![status isKindOfClass:[NSString class]] ? @"no status"
+                           : [status isEqualToString:@"OK"] ? (sawCiphered ? @"OK, only protected links" : @"OK, no audio links")
+                           : status;
+            [reasons addObject:[NSString stringWithFormat:@"%@: %@", client[@"name"], what]];
+        }
     }
 
+    if (playerOut)
+        *playerOut = firstPlayer;
     if (reasonOut)
-        *reasonOut = [reasons componentsJoinedByString:@"; "];
-    return nil;
+        *reasonOut = reasons.count ? [reasons componentsJoinedByString:@"; "] : nil;
+
+    NSMutableArray<NSDictionary *> *options = [hlsOptions mutableCopy];
+    [options addObjectsFromArray:directOptions];
+    return options;
 }
 
 #pragma mark Confirm + download loop
@@ -803,22 +812,41 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
                 continue;
             }
 
-            // 1. Stream: HLS if YouTube offers it, else the plain AAC file
-            NSString *reason = nil, *hlsURL = nil, *directURL = nil, *userAgent = nil;
-            NSDictionary *player = [self streamForVideoID:track.videoID hlsURL:&hlsURL directURL:&directURL userAgent:&userAgent reason:&reason];
-            NSString *audioURL = hlsURL ? YTMUAudioURLFromManifest(YTMUGet(hlsURL)) : nil;
+            // 1. Stream: try every option until one works
+            NSString *reason = nil;
+            NSDictionary *player = nil;
+            NSArray<NSDictionary *> *options = [self streamOptionsForVideoID:track.videoID player:&player reason:&reason];
             NSString *rawPath = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"%@_raw.m4a", track.videoID]];
+            NSString *audioURL = nil;
+            NSMutableArray<NSString *> *attempts = [NSMutableArray array];
+            __weak __typeof(self) weakSelf = self;
 
-            if (!audioURL && directURL) {
-                __weak __typeof(self) weakSelf = self;
-                if (YTMUDownloadInChunks(directURL, userAgent, rawPath, ^BOOL { return weakSelf.cancelled; }))
-                    audioURL = rawPath; // ffmpeg reads the local file and only adds tags
-                else
-                    reason = @"audio download failed";
+            for (NSDictionary *option in options) {
+                if (self.cancelled)
+                    break;
+                if ([option[@"type"] isEqualToString:@"hls"]) {
+                    audioURL = YTMUAudioURLFromManifest(YTMUGet(option[@"url"]));
+                    if (audioURL)
+                        break;
+                    [attempts addObject:[NSString stringWithFormat:@"%@ hls: no audio", option[@"client"]]];
+                } else {
+                    NSInteger status = 0;
+                    if (YTMUDownloadInChunks(option[@"url"], option[@"ua"], rawPath, &status, ^BOOL { return weakSelf.cancelled; })) {
+                        audioURL = rawPath; // ffmpeg reads the local file and only adds tags
+                        break;
+                    }
+                    [attempts addObject:[NSString stringWithFormat:@"%@ file: HTTP %ld", option[@"client"], (long)status]];
+                }
             }
+
             if (!audioURL) {
-                if (!self.cancelled)
-                    [failures addObject:[NSString stringWithFormat:@"%ld. %@ (%@)", (long)track.position, track.title, reason ?: @"no audio stream"]];
+                if (!self.cancelled) {
+                    NSMutableArray *parts = [attempts mutableCopy];
+                    if (reason)
+                        [parts addObject:reason];
+                    NSString *why = parts.count ? [parts componentsJoinedByString:@"; "] : @"no audio stream";
+                    [failures addObject:[NSString stringWithFormat:@"%ld. %@ (%@)", (long)track.position, track.title, why]];
+                }
                 continue;
             }
 
