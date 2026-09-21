@@ -177,13 +177,18 @@ static UIViewController *YTMUNowPlayingController(UIView *view) {
 
 #pragma mark - Playlist page helpers
 
-static BOOL YTMUIsPlaylistHeader(UIView *view) {
+// Download badge inside a page header (playlist, album, ...) and not Now Playing
+static BOOL YTMUIsCollectionHeader(UIView *view) {
     UIViewController *vc = [view respondsToSelector:@selector(_viewControllerForAncestor)] ? view._viewControllerForAncestor : nil;
+    BOOL header = NO;
     for (UIViewController *current = vc; current; current = current.parentViewController) {
-        if ([NSStringFromClass([current class]) containsString:@"PlaylistDetailHeader"])
-            return YES;
+        NSString *name = NSStringFromClass([current class]);
+        if ([name containsString:@"NowPlaying"])
+            return NO;
+        if ([name containsString:@"Header"])
+            header = YES;
     }
-    return NO;
+    return header;
 }
 
 // Reads "VLPL..." the same way YTMTab.x reads its tab's browse ID
@@ -198,7 +203,7 @@ static NSString *YTMUBrowseIDInTree(UIViewController *vc, UIView *view, Class br
         return nil;
     if ([vc isKindOfClass:browseClass] && vc.isViewLoaded && [view isDescendantOfView:vc.view]) {
         NSString *browseID = YTMUBrowseIDOfController(vc);
-        if ([browseID hasPrefix:@"VL"])
+        if ([browseID hasPrefix:@"VL"] || [browseID hasPrefix:@"MPREb_"])
             return browseID;
     }
     for (UIViewController *child in vc.childViewControllers) {
@@ -209,22 +214,161 @@ static NSString *YTMUBrowseIDInTree(UIViewController *vc, UIView *view, Class br
     return YTMUBrowseIDInTree(vc.presentedViewController, view, browseClass, depth + 1);
 }
 
+// Playlist pages prefer playlist IDs, album pages prefer album IDs
+static BOOL YTMUPreferPlaylistIDs = YES;
+
+// Finds a playlist/album ID in a string, best match for the current page type
+static NSString *YTMUCollectionIDInString(NSString *text) {
+    if (text.length == 0)
+        return nil;
+    static NSRegularExpression *regex = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        regex = [NSRegularExpression regularExpressionWithPattern:@"(MPREb_[A-Za-z0-9_-]{5,}|VL[A-Za-z0-9_-]{10,}|OLAK5uy_[A-Za-z0-9_-]{5,}|PL[A-Za-z0-9_-]{16,})" options:0 error:nil];
+    });
+
+    NSString *best = nil;
+    NSInteger bestRank = 99;
+    for (NSTextCheckingResult *match in [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)]) {
+        NSString *candidate = [text substringWithRange:match.range];
+        NSInteger rank;
+        if (YTMUPreferPlaylistIDs)
+            rank = [candidate hasPrefix:@"VL"] ? 0 : [candidate hasPrefix:@"PL"] ? 1 : [candidate hasPrefix:@"OLAK5uy_"] ? 2 : 3;
+        else
+            rank = [candidate hasPrefix:@"MPREb_"] ? 0 : [candidate hasPrefix:@"OLAK5uy_"] ? 1 : [candidate hasPrefix:@"VL"] ? 2 : 3;
+        if (rank < bestRank) {
+            best = candidate;
+            bestRank = rank;
+        }
+    }
+    return best;
+}
+
+// Looks through an object's own YT* fields (and one level deeper) for an ID
+static NSString *YTMUScanObjectForID(id object, NSInteger depth, NSHashTable *seen) {
+    if (!object || [seen containsObject:object])
+        return nil;
+    [seen addObject:object];
+
+    if ([object isKindOfClass:[NSString class]])
+        return YTMUCollectionIDInString(object);
+
+    NSString *className = NSStringFromClass([object class]);
+    // Protobuf models (YTI...) print all their fields in their description
+    if ([className hasPrefix:@"YTI"]) {
+        NSString *description = [object description];
+        // Skip whole-page data (full of other songs' album links), headers are small
+        if (description.length > 300000)
+            return nil;
+        return YTMUCollectionIDInString(description);
+    }
+
+    if ([object isKindOfClass:[NSArray class]]) {
+        NSUInteger count = 0;
+        for (id item in (NSArray *)object) {
+            if (++count > 20)
+                break;
+            NSString *found = YTMUScanObjectForID(item, depth - 1, seen);
+            if (found)
+                return found;
+        }
+        return nil;
+    }
+
+    if (depth <= 0 || [object isKindOfClass:[UIView class]])
+        return nil;
+
+    for (Class cls = [object class]; cls; cls = class_getSuperclass(cls)) {
+        NSString *name = NSStringFromClass(cls);
+        if (![name hasPrefix:@"YT"] && ![name hasPrefix:@"ELM"])
+            break; // stop at UIKit / Foundation base classes
+
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList(cls, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            const char *type = ivar_getTypeEncoding(ivars[i]);
+            const char *ivarName = ivar_getName(ivars[i]);
+            if (!type || type[0] != '@' || !ivarName)
+                continue;
+            id value = YTMUSafeValue(object, [NSString stringWithUTF8String:ivarName]);
+            NSString *found = YTMUScanObjectForID(value, depth - 1, seen);
+            if (found) {
+                free(ivars);
+                return found;
+            }
+        }
+        free(ivars);
+    }
+    return nil;
+}
+
+static NSArray<UIViewController *> *YTMUControllersAround(UIView *view) {
+    NSMutableArray<UIViewController *> *controllers = [NSMutableArray array];
+    UIViewController *vc = [view respondsToSelector:@selector(_viewControllerForAncestor)] ? view._viewControllerForAncestor : nil;
+    for (UIViewController *current = vc; current; current = current.parentViewController) {
+        if (![controllers containsObject:current])
+            [controllers addObject:current];
+    }
+    for (UIResponder *responder = view; responder && controllers.count < 12; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:[UIViewController class]] && ![controllers containsObject:responder])
+            [controllers addObject:(UIViewController *)responder];
+    }
+    return controllers;
+}
+
+static NSString *YTMUDebugReport(UIView *view) {
+    NSMutableString *report = [NSMutableString stringWithString:@"YTMU collection ID debug\n"];
+    for (UIViewController *vc in YTMUControllersAround(view)) {
+        [report appendFormat:@"\n%@:", NSStringFromClass([vc class])];
+        for (Class cls = [vc class]; cls; cls = class_getSuperclass(cls)) {
+            NSString *name = NSStringFromClass(cls);
+            if (![name hasPrefix:@"YT"] && ![name hasPrefix:@"ELM"])
+                break;
+            unsigned int count = 0;
+            Ivar *ivars = class_copyIvarList(cls, &count);
+            for (unsigned int i = 0; i < count; i++) {
+                const char *type = ivar_getTypeEncoding(ivars[i]);
+                if (type && type[0] == '@')
+                    [report appendFormat:@" %s%s", ivar_getName(ivars[i]), type];
+            }
+            free(ivars);
+        }
+    }
+    return report;
+}
+
 static NSString *YTMUPlaylistBrowseID(UIView *view) {
     Class browseClass = NSClassFromString(@"YTMBrowseViewController");
-    if (!browseClass || !view)
+    if (!view)
         return nil;
 
     // 1. Walk up from the tapped button
     for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:browseClass]) {
             NSString *browseID = YTMUBrowseIDOfController(responder);
-            if ([browseID hasPrefix:@"VL"])
+            if ([browseID hasPrefix:@"VL"] || [browseID hasPrefix:@"MPREb_"])
                 return browseID;
         }
     }
 
     // 2. Search all screens for the browse page that contains the button
-    return YTMUBrowseIDInTree(view.window.rootViewController, view, browseClass, 0);
+    NSString *fromTree = YTMUBrowseIDInTree(view.window.rootViewController, view, browseClass, 0);
+    if (fromTree)
+        return fromTree;
+
+    // 3. Search the header's own data for any playlist / album ID
+    YTMUPreferPlaylistIDs = NO;
+    for (UIViewController *vc in YTMUControllersAround(view)) {
+        if ([NSStringFromClass([vc class]) containsString:@"Playlist"])
+            YTMUPreferPlaylistIDs = YES;
+    }
+    NSHashTable *seen = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
+    for (UIViewController *vc in YTMUControllersAround(view)) {
+        NSString *found = YTMUScanObjectForID(vc, 3, seen);
+        if (found)
+            return found;
+    }
+    return nil;
 }
 
 #pragma mark - Metadata helpers
@@ -305,14 +449,15 @@ static NSString *YTMUBestThumbnailURL(id videoDetails) {
     UIView *tappedView = [tapRecognizer isKindOfClass:[UIGestureRecognizer class]] ? tapRecognizer.view : nil;
 
     // Download badge on a playlist page -> download the whole playlist
-    if (wantsAudio && YTMUIsPlaylistHeader(tappedView)) {
+    if (wantsAudio && YTMUIsCollectionHeader(tappedView)) {
         NSString *browseID = YTMUPlaylistBrowseID(tappedView);
         if (browseID.length) {
             [[YTMUPlaylistDownloader sharedDownloader] startWithBrowseID:browseID];
         } else {
+            [UIPasteboard generalPasteboard].string = YTMUDebugReport(tappedView);
             YTAlertView *alertView = [%c(YTAlertView) infoDialog];
             alertView.title = LOC(@"OOPS");
-            alertView.subtitle = @"Couldn't read this playlist's ID";
+            alertView.subtitle = @"Couldn't read this page's ID. Debug info was copied to your clipboard.";
             [alertView show];
         }
         return;
