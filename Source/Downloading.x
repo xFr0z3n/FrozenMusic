@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "FFMpegDownloader.h"
+#import "PlaylistDownloader.h"
 #import "Headers/YTUIResources.h"
 #import "Headers/YTMActionSheetController.h"
 #import "Headers/YTMActionRowView.h"
@@ -174,6 +175,58 @@ static UIViewController *YTMUNowPlayingController(UIView *view) {
     return nil;
 }
 
+#pragma mark - Playlist page helpers
+
+static BOOL YTMUIsPlaylistHeader(UIView *view) {
+    UIViewController *vc = [view respondsToSelector:@selector(_viewControllerForAncestor)] ? view._viewControllerForAncestor : nil;
+    for (UIViewController *current = vc; current; current = current.parentViewController) {
+        if ([NSStringFromClass([current class]) containsString:@"PlaylistDetailHeader"])
+            return YES;
+    }
+    return NO;
+}
+
+// Reads "VLPL..." the same way YTMTab.x reads its tab's browse ID
+static NSString *YTMUBrowseIDOfController(id controller) {
+    id navEndpoint = YTMUSafeValue(controller, @"_navEndpoint") ?: YTMUSafeValue(controller, @"_navigationEndpoint");
+    id browseEndpoint = YTMUSafeValue(navEndpoint, @"browseEndpoint");
+    return YTMUSafeString(browseEndpoint, @"browseId");
+}
+
+static NSString *YTMUBrowseIDInTree(UIViewController *vc, UIView *view, Class browseClass, NSUInteger depth) {
+    if (!vc || depth > 12)
+        return nil;
+    if ([vc isKindOfClass:browseClass] && vc.isViewLoaded && [view isDescendantOfView:vc.view]) {
+        NSString *browseID = YTMUBrowseIDOfController(vc);
+        if ([browseID hasPrefix:@"VL"])
+            return browseID;
+    }
+    for (UIViewController *child in vc.childViewControllers) {
+        NSString *found = YTMUBrowseIDInTree(child, view, browseClass, depth + 1);
+        if (found)
+            return found;
+    }
+    return YTMUBrowseIDInTree(vc.presentedViewController, view, browseClass, depth + 1);
+}
+
+static NSString *YTMUPlaylistBrowseID(UIView *view) {
+    Class browseClass = NSClassFromString(@"YTMBrowseViewController");
+    if (!browseClass || !view)
+        return nil;
+
+    // 1. Walk up from the tapped button
+    for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:browseClass]) {
+            NSString *browseID = YTMUBrowseIDOfController(responder);
+            if ([browseID hasPrefix:@"VL"])
+                return browseID;
+        }
+    }
+
+    // 2. Search all screens for the browse page that contains the button
+    return YTMUBrowseIDInTree(view.window.rootViewController, view, browseClass, 0);
+}
+
 #pragma mark - Metadata helpers
 
 static NSString *YTMUCleanFileName(NSString *name) {
@@ -250,6 +303,21 @@ static NSString *YTMUBestThumbnailURL(id videoDetails) {
         return %orig;
 
     UIView *tappedView = [tapRecognizer isKindOfClass:[UIGestureRecognizer class]] ? tapRecognizer.view : nil;
+
+    // Download badge on a playlist page -> download the whole playlist
+    if (wantsAudio && YTMUIsPlaylistHeader(tappedView)) {
+        NSString *browseID = YTMUPlaylistBrowseID(tappedView);
+        if (browseID.length) {
+            [[YTMUPlaylistDownloader sharedDownloader] startWithBrowseID:browseID];
+        } else {
+            YTAlertView *alertView = [%c(YTAlertView) infoDialog];
+            alertView.title = LOC(@"OOPS");
+            alertView.subtitle = @"Couldn't read this playlist's ID";
+            [alertView show];
+        }
+        return;
+    }
+
     UIViewController *playingVC = YTMUNowPlayingController(tappedView);
     if (!playingVC)
         return %orig;
