@@ -1,6 +1,6 @@
 // TEMPORARY - delete after we know how YTM sends its stream ("player") requests.
 // Records a short summary of the app's youtubei requests (no login values),
-// and copies the report when you tap a download button.
+// Shake the phone to copy the report.
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -110,36 +110,27 @@ static void YTMURecordRequest(NSURLRequest *request, NSData *body, NSString *met
 }
 %end
 
-@interface ELMTouchCommandPropertiesHandler : NSObject
-@end
-
-%hook ELMTouchCommandPropertiesHandler
-- (void)handleTap {
-    @try {
-        id node = class_getInstanceVariable([self class], "_controller") ? [self valueForKey:@"_controller"] : nil;
-        NSString *key = [node respondsToSelector:NSSelectorFromString(@"key")] ? [node valueForKey:@"key"] : nil;
-        if ([key isKindOfClass:[NSString class]] && [key isEqualToString:@"music_download_badge_1"]) {
-            NSString *report;
-            @synchronized ([NSNull class]) {
-                report = [NSString stringWithFormat:@"YTMU net debug\nyoutubei requests seen: %lu\nplayer requests:\n%@",
-                          (unsigned long)ytmuYoutubeiCount,
-                          ytmuNetLog.count ? [ytmuNetLog componentsJoinedByString:@"\n"] : @"(none)"];
-            }
-            [UIPasteboard generalPasteboard].string = report;
-
-            dispatch_async(dispatch_get_main_queue(), ^{
-                UIWindow *window = [UIApplication sharedApplication].keyWindow;
-                if (!window)
-                    return;
-                MBProgressHUD *hud = [MBProgressHUD showHUDAddedTo:window animated:YES];
-                hud.mode = MBProgressHUDModeText;
-                hud.userInteractionEnabled = NO;
-                hud.label.text = @"Network debug copied";
-                [hud hideAnimated:YES afterDelay:2.5];
-            });
-        }
-    } @catch (__unused NSException *exception) {
-    }
+// Shake the phone to copy the report (the download button can't be used,
+// because Downloading.x handles that tap first and doesn't pass it on)
+%hook UIWindow
+- (void)motionEnded:(UIEventSubtype)motion withEvent:(UIEvent *)event {
     %orig;
+    if (motion != UIEventSubtypeMotionShake)
+        return;
+
+    NSString *report;
+    @synchronized ([NSNull class]) {
+        report = [NSString stringWithFormat:@"YTMU net debug\nyoutubei requests seen: %lu\nplayer requests:\n%@",
+                  (unsigned long)ytmuYoutubeiCount,
+                  ytmuNetLog.count ? [ytmuNetLog componentsJoinedByString:@"\n"] : @"(none)"];
+    }
+    [UIPasteboard generalPasteboard].string = report;
+
+    MBProgressHUD *hud = [MBProgressHUD showHUDAddedTo:self animated:YES];
+    hud.mode = MBProgressHUDModeText;
+    hud.userInteractionEnabled = NO;
+    hud.label.text = @"Network debug copied";
+    hud.detailsLabel.text = [NSString stringWithFormat:@"%lu requests seen", (unsigned long)ytmuYoutubeiCount];
+    [hud hideAnimated:YES afterDelay:2.5];
 }
 %end
