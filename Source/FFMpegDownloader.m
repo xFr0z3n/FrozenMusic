@@ -61,8 +61,7 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
                     self.hud.detailsLabel.text = @"100%";
                 }
 
-                [self embedCover:coverData metadata:metadata inputURL:rawURL outputURL:taggedURL completion:^(BOOL tagged) {
-                    NSURL *finishedURL = tagged ? taggedURL : rawURL;
+                [self addCover:coverData metadata:metadata inputURL:rawURL fallbackURL:taggedURL completion:^(NSURL *finishedURL) {
 
                     [fm removeItemAtURL:outputURL error:nil]; // re-download overwrites
                     BOOL isMoved = [fm moveItemAtURL:finishedURL toURL:outputURL error:nil];
@@ -92,7 +91,130 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
     });
 }
 
-// Rewrites the file with Apple's own writer (no re-encoding) to embed the cover.
+// Adds the cover: first by writing it straight into the file's tag box,
+// if that isn't possible by rewriting the file with AVFoundation.
+// Calls back with the file that should be kept.
+- (void)addCover:(NSData *)coverData
+        metadata:(NSDictionary<NSString *, NSString *> *)metadata
+        inputURL:(NSURL *)inputURL
+     fallbackURL:(NSURL *)fallbackURL
+      completion:(void (^)(NSURL *finishedURL))completion {
+    UIImage *image = coverData.length > 0 ? [UIImage imageWithData:coverData] : nil;
+    NSData *jpegData = image ? UIImageJPEGRepresentation(image, 0.92) : nil;
+    if (!jpegData) {
+        completion(inputURL);
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL embedded = [self writeCoverAtom:jpegData intoFile:inputURL];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (embedded) {
+                completion(inputURL);
+                return;
+            }
+
+            [self embedCover:coverData metadata:metadata inputURL:inputURL outputURL:fallbackURL completion:^(BOOL success) {
+                completion(success ? fallbackURL : inputURL);
+            }];
+        });
+    });
+}
+
+#pragma mark - Direct cover writing (MP4 boxes)
+
+static uint32_t YTMUReadUInt32(const uint8_t *bytes) {
+    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) | ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
+}
+
+static void YTMUWriteUInt32(uint8_t *bytes, uint32_t value) {
+    bytes[0] = (value >> 24) & 0xFF;
+    bytes[1] = (value >> 16) & 0xFF;
+    bytes[2] = (value >> 8) & 0xFF;
+    bytes[3] = value & 0xFF;
+}
+
+// Finds a child box of `type` between start and end. Returns its offset or NSNotFound.
+static NSUInteger YTMUFindBox(const uint8_t *bytes, NSUInteger start, NSUInteger end, const char *type, uint32_t *outSize) {
+    NSUInteger offset = start;
+    while (offset + 8 <= end) {
+        uint32_t size = YTMUReadUInt32(bytes + offset);
+        if (size < 8 || offset + size > end)
+            return NSNotFound; // 64-bit or broken sizes: don't touch the file
+        if (memcmp(bytes + offset + 4, type, 4) == 0) {
+            if (outSize)
+                *outSize = size;
+            return offset;
+        }
+        offset += size;
+    }
+    return NSNotFound;
+}
+
+// Inserts a "covr" entry into moov/udta/meta/ilst. Only done when moov is the
+// last box in the file (ffmpeg's default), because then no audio data offsets
+// change. Returns NO without modifying anything if the layout isn't as expected.
+- (BOOL)writeCoverAtom:(NSData *)jpegData intoFile:(NSURL *)fileURL {
+    NSMutableData *file = [NSMutableData dataWithContentsOfURL:fileURL];
+    if (file.length < 16 || jpegData.length == 0)
+        return NO;
+
+    const uint8_t *bytes = file.bytes;
+    NSUInteger length = file.length;
+
+    uint32_t moovSize = 0, udtaSize = 0, metaSize = 0, ilstSize = 0;
+    NSUInteger moov = YTMUFindBox(bytes, 0, length, "moov", &moovSize);
+    if (moov == NSNotFound || moov + moovSize != length)
+        return NO;
+
+    NSUInteger udta = YTMUFindBox(bytes, moov + 8, moov + moovSize, "udta", &udtaSize);
+    if (udta == NSNotFound)
+        return NO;
+
+    NSUInteger meta = YTMUFindBox(bytes, udta + 8, udta + udtaSize, "meta", &metaSize);
+    if (meta == NSNotFound)
+        return NO;
+
+    // meta is a "full box": 4 extra bytes (version + flags) before its children
+    NSUInteger ilst = YTMUFindBox(bytes, meta + 12, meta + metaSize, "ilst", &ilstSize);
+    if (ilst == NSNotFound)
+        return NO;
+
+    if (YTMUFindBox(bytes, ilst + 8, ilst + ilstSize, "covr", NULL) != NSNotFound)
+        return YES; // already has a cover
+
+    // covr box = [size]["covr"] + data box = [size]["data"][type 13 = JPEG][locale 0][image]
+    uint32_t dataBoxSize = (uint32_t)(16 + jpegData.length);
+    uint32_t covrBoxSize = 8 + dataBoxSize;
+
+    NSMutableData *covr = [NSMutableData dataWithLength:24];
+    uint8_t *c = covr.mutableBytes;
+    YTMUWriteUInt32(c, covrBoxSize);
+    memcpy(c + 4, "covr", 4);
+    YTMUWriteUInt32(c + 8, dataBoxSize);
+    memcpy(c + 12, "data", 4);
+    YTMUWriteUInt32(c + 16, 13);
+    YTMUWriteUInt32(c + 20, 0);
+    [covr appendData:jpegData];
+
+    // Grow every parent box by the inserted size
+    uint64_t newMoovSize = (uint64_t)moovSize + covrBoxSize;
+    if (newMoovSize > UINT32_MAX)
+        return NO;
+
+    uint8_t *m = file.mutableBytes;
+    YTMUWriteUInt32(m + ilst, ilstSize + covrBoxSize);
+    YTMUWriteUInt32(m + meta, metaSize + covrBoxSize);
+    YTMUWriteUInt32(m + udta, udtaSize + covrBoxSize);
+    YTMUWriteUInt32(m + moov, (uint32_t)newMoovSize);
+
+    [file replaceBytesInRange:NSMakeRange(ilst + ilstSize, 0) withBytes:covr.bytes length:covr.length];
+
+    return [file writeToURL:fileURL atomically:YES];
+}
+
+// Backup: rewrites the file with Apple's own writer (no re-encoding) to embed the cover.
 // Keeps the tags ffmpeg wrote and fills in any that AVFoundation couldn't read.
 - (void)embedCover:(NSData *)coverData
           metadata:(NSDictionary<NSString *, NSString *> *)metadata
