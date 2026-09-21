@@ -61,7 +61,7 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
                     self.hud.detailsLabel.text = @"100%";
                 }
 
-                [self addCover:coverData metadata:metadata inputURL:rawURL fallbackURL:taggedURL completion:^(NSURL *finishedURL) {
+                [self finalizeCover:coverData metadata:metadata inputURL:rawURL fallbackURL:taggedURL completion:^(NSURL *finishedURL) {
 
                     [fm removeItemAtURL:outputURL error:nil]; // re-download overwrites
                     BOOL isMoved = [fm moveItemAtURL:finishedURL toURL:outputURL error:nil];
@@ -94,7 +94,7 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
 // Adds the cover: first by writing it straight into the file's tag box,
 // if that isn't possible by rewriting the file with AVFoundation.
 // Calls back with the file that should be kept.
-- (void)addCover:(NSData *)coverData
+- (void)finalizeCover:(NSData *)coverData
         metadata:(NSDictionary<NSString *, NSString *> *)metadata
         inputURL:(NSURL *)inputURL
      fallbackURL:(NSURL *)fallbackURL
