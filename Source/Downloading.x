@@ -424,6 +424,15 @@ static NSString *YTMUBestThumbnailURL(id videoDetails) {
 
 #pragma mark - Hook
 
+// Tells the playlist downloader whenever the player starts a new song
+// (same hook SponsorBlock.x uses)
+%hook YTPlayerViewController
+- (void)playbackController:(id)arg1 didActivateVideo:(id)arg2 withPlaybackData:(id)arg3 {
+    %orig;
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"YTMUPlayerDidActivateVideo" object:self];
+}
+%end
+
 @interface ELMTouchCommandPropertiesHandler : NSObject
 - (void)ytmu_downloadAudio:(YTMUTrackInfo *)info;
 - (void)ytmu_downloadCoverImage:(YTMUTrackInfo *)info;
