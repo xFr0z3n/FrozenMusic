@@ -1,0 +1,59 @@
+#import <UIKit/UIKit.h>
+#import <AVFoundation/AVFoundation.h>
+
+// Posted when the song, play state, shuffle or repeat changes
+FOUNDATION_EXPORT NSString *const YTMUOfflinePlayerDidChangeNotification;
+// Posted about twice a second while playing (progress bars)
+FOUNDATION_EXPORT NSString *const YTMUOfflinePlayerProgressNotification;
+
+// Implemented in Downloading.x: pauses YouTube Music's own player
+FOUNDATION_EXPORT void YTMUPauseAppPlayer(void);
+
+#pragma mark - Track
+
+@interface YTMUOfflineTrack : NSObject
+@property (nonatomic, strong) NSURL *url;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *artist;
+@property (nonatomic, copy) NSString *album;
+@property (nonatomic, copy) NSString *albumArtist;
+@property (nonatomic, copy) NSString *year;
+@property (nonatomic, copy) NSString *format;     // "m4a" / "mp3"
+@property (nonatomic) NSInteger number;           // track number (0 = unknown)
+@property (nonatomic) NSTimeInterval duration;
+@property (nonatomic, strong) UIImage *artwork;
+
+// Reads the file's tags + cover. Slow for big lists: call off the main thread.
++ (instancetype)trackWithURL:(NSURL *)url fallbackArtwork:(UIImage *)fallback;
+@end
+
+#pragma mark - Player
+
+typedef NS_ENUM(NSInteger, YTMURepeatMode) {
+    YTMURepeatOff = 0,
+    YTMURepeatAll,
+    YTMURepeatOne
+};
+
+@interface YTMUOfflinePlayer : NSObject
++ (instancetype)shared;
+
+@property (nonatomic, readonly) NSArray<YTMUOfflineTrack *> *tracks;
+@property (nonatomic, readonly) YTMUOfflineTrack *currentTrack;
+@property (nonatomic, readonly) BOOL isPlaying;
+@property (nonatomic, readonly) BOOL isShuffled;
+@property (nonatomic) YTMURepeatMode repeatMode;
+@property (nonatomic, readonly) NSTimeInterval currentTime;
+@property (nonatomic, readonly) NSTimeInterval duration;
+
+- (void)playTracks:(NSArray<YTMUOfflineTrack *> *)tracks startIndex:(NSInteger)index shuffle:(BOOL)shuffle;
+- (void)togglePlayPause;
+- (void)play;
+- (void)pause;
+- (void)next;
+- (void)previous;
+- (void)seekTo:(NSTimeInterval)time;
+- (void)setShuffled:(BOOL)shuffled;
+- (void)cycleRepeatMode;
+- (void)stop;
+@end
