@@ -5,7 +5,6 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
     YTMUSectionNowPlaying = 0,
     YTMUSectionCollections,
     YTMUSectionSongs,
-    YTMUSectionActions,
     YTMUSectionCount
 };
 
@@ -151,8 +150,6 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
             return (NSInteger)self.collections.count;
         case YTMUSectionSongs:
             return (NSInteger)self.songs.count;
-        case YTMUSectionActions:
-            return (self.collections.count || self.songs.count) ? 2 : 0;
         default:
             return 0;
     }
@@ -200,7 +197,8 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == YTMUSectionNowPlaying) {
         YTMUTrackCell *cell = [tableView dequeueReusableCellWithIdentifier:@"track" forIndexPath:indexPath];
-        [cell configureWithTrack:[YTMUOfflinePlayer shared].currentTrack showNumber:NO isCurrent:YES];
+        YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+        [cell configureWithTrack:player.currentTrack isCurrent:YES isPlaying:player.isPlaying];
         return cell;
     }
 
@@ -213,21 +211,13 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
     if (indexPath.section == YTMUSectionSongs) {
         YTMUTrackCell *cell = [tableView dequeueReusableCellWithIdentifier:@"track" forIndexPath:indexPath];
         YTMUOfflineTrack *track = self.songs[(NSUInteger)indexPath.row];
-        BOOL isCurrent = [[YTMUOfflinePlayer shared].currentTrack.url isEqual:track.url];
-        [cell configureWithTrack:track showNumber:NO isCurrent:isCurrent];
+        YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+        BOOL isCurrent = [player.currentTrack.url isEqual:track.url];
+        [cell configureWithTrack:track isCurrent:isCurrent isPlaying:player.isPlaying];
         return cell;
     }
 
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"action"];
-    if (!cell)
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"action"];
-    BOOL isRemove = indexPath.row == 1;
-    cell.backgroundColor = [UIColor clearColor];
-    cell.textLabel.text = isRemove ? LOC(@"REMOVE_ALL") : LOC(@"SHARE_ALL");
-    cell.textLabel.textColor = [UIColor whiteColor];
-    cell.imageView.image = [UIImage systemImageNamed:isRemove ? @"trash" : @"square.and.arrow.up.on.square"];
-    cell.imageView.tintColor = isRemove ? [UIColor systemRedColor] : [UIColor colorWithRed:30.0 / 255.0 green:150.0 / 255.0 blue:245.0 / 255.0 alpha:1.0];
-    return cell;
+    return [UITableViewCell new];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -251,34 +241,12 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
         YTMUNowPlayingViewController *nowPlaying = [YTMUNowPlayingViewController new];
         nowPlaying.modalPresentationStyle = UIModalPresentationFullScreen;
         [self presentViewController:nowPlaying animated:YES completion:nil];
-    } else if (indexPath.section == YTMUSectionActions) {
-        if (indexPath.row == 0)
-            [self shareAll:[tableView cellForRowAtIndexPath:indexPath]];
-        else
-            [self removeAll];
     }
 }
 
 #pragma mark Swipe actions
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == YTMUSectionCollections) {
-        YTMUCollection *collection = self.collections[(NSUInteger)indexPath.row];
-        UIContextualAction *share = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:nil handler:^(UIContextualAction *action, UIView *sourceView, void (^completion)(BOOL)) {
-            [self shareItems:collection.files from:sourceView];
-            completion(YES);
-        }];
-        share.image = [UIImage systemImageNamed:@"square.and.arrow.up"];
-        share.backgroundColor = [UIColor systemBlueColor];
-
-        UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:nil handler:^(UIContextualAction *action, UIView *sourceView, void (^completion)(BOOL)) {
-            [self confirmDeleteURL:collection.folder name:collection.name extraURL:nil];
-            completion(YES);
-        }];
-        delete.image = [UIImage systemImageNamed:@"trash"];
-        return [UISwipeActionsConfiguration configurationWithActions:@[delete, share]];
-    }
-
     if (indexPath.section == YTMUSectionSongs) {
         YTMUOfflineTrack *track = self.songs[(NSUInteger)indexPath.row];
         NSURL *pngURL = [[track.url URLByDeletingPathExtension] URLByAppendingPathExtension:@"png"];
@@ -323,46 +291,6 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
         popover.sourceRect = source.bounds;
     }
     [self presentViewController:activity animated:YES completion:nil];
-}
-
-- (void)shareAll:(UIView *)source {
-    NSMutableArray<NSURL *> *files = [NSMutableArray array];
-    for (YTMUCollection *collection in self.collections)
-        [files addObjectsFromArray:collection.files];
-    for (YTMUOfflineTrack *song in self.songs)
-        [files addObject:song.url];
-    [self shareItems:files from:source];
-}
-
-- (void)confirmDeleteURL:(NSURL *)url name:(NSString *)name extraURL:(NSURL *)extraURL {
-    YTAlertView *alertView = [NSClassFromString(@"YTAlertView") confirmationDialogWithAction:^{
-        YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
-        if ([player.currentTrack.url.path hasPrefix:url.path])
-            [player stop];
-        [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
-        if (extraURL)
-            [[NSFileManager defaultManager] removeItemAtURL:extraURL error:nil];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self reloadData];
-        });
-    } actionTitle:LOC(@"DELETE")];
-    alertView.title = @"YTMusicUltimate";
-    alertView.subtitle = [NSString stringWithFormat:LOC(@"DELETE_MESSAGE"), name];
-    [alertView show];
-}
-
-- (void)removeAll {
-    NSURL *root = [self rootFolder];
-    YTAlertView *alertView = [NSClassFromString(@"YTAlertView") confirmationDialogWithAction:^{
-        [[YTMUOfflinePlayer shared] stop];
-        [[NSFileManager defaultManager] removeItemAtURL:root error:nil];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self reloadData];
-        });
-    } actionTitle:LOC(@"DELETE")];
-    alertView.title = @"YTMusicUltimate";
-    alertView.subtitle = [NSString stringWithFormat:LOC(@"DELETE_MESSAGE"), LOC(@"ALL_DOWNLOADS")];
-    [alertView show];
 }
 
 - (void)renameSong:(YTMUOfflineTrack *)track {
