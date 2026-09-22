@@ -95,6 +95,28 @@ jobs:
           sed -i '' "s|__NEXTCLOUD_USER__|$NEXTCLOUD_USER|g" main/Source/DiscordRPC.x
           sed -i '' "s|__NEXTCLOUD_PASS__|$NEXTCLOUD_PASS|g" main/Source/DiscordRPC.x
           sed -i '' "s|__NEXTCLOUD_PUBLIC_URL__|$NEXTCLOUD_PUBLIC_URL|g" main/Source/DiscordRPC.x
+      - name: Build LAME (MP3 encoder) for iOS
+        run: |
+          set -e
+          cd "$RUNNER_TEMP"
+          curl -fL --retry 5 --retry-delay 5 -o lame.tar.gz "https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz" \
+            || curl -fL --retry 5 --retry-delay 5 -o lame.tar.gz "https://sourceforge.net/projects/lame/files/lame/3.100/lame-3.100.tar.gz/download"
+          tar xzf lame.tar.gz
+          cd lame-3.100
+          # known LAME 3.100 issue: this symbol doesn't exist and breaks Apple's linker
+          sed -i '' '/lame_init_old/d' include/libmp3lame.sym
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          export CC="$(xcrun --sdk iphoneos -f clang)"
+          export CFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=13.0 -O2"
+          export LDFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=13.0"
+          ./configure --host=arm-apple-darwin --disable-shared --enable-static \
+            --disable-frontend --disable-decoder --prefix="$RUNNER_TEMP/lame-out"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+          # Makefile links every .a in Source/Utils/lib automatically
+          mkdir -p "$GITHUB_WORKSPACE/main/Source/Utils/lib" "$GITHUB_WORKSPACE/main/Source/Utils/lame"
+          cp "$RUNNER_TEMP/lame-out/lib/libmp3lame.a" "$GITHUB_WORKSPACE/main/Source/Utils/lib/"
+          cp "$RUNNER_TEMP/lame-out/include/lame/lame.h" "$GITHUB_WORKSPACE/main/Source/Utils/lame/"
       - name: Build Tweak for Sideloading
         run: |
           cd main
