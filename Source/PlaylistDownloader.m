@@ -1,5 +1,6 @@
 #import "PlaylistDownloader.h"
 #import "FFMpegDownloader.h"
+#import "MP3Encoder.h"
 #import "Headers/YTPlayerViewController.h"
 #import <sys/utsname.h>
 
@@ -256,6 +257,42 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     return [file writeToURL:fileURL atomically:YES];
 }
 
+// Updates the ID3 "TRCK" number in place when the new number has the same
+// number of digits (a longer number would need the whole tag rewritten)
+static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
+    NSMutableData *file = [NSMutableData dataWithContentsOfURL:fileURL];
+    const uint8_t *b = file.bytes;
+    if (file.length < 10 || memcmp(b, "ID3", 3) != 0 || b[3] != 3)
+        return NO;
+    NSUInteger tagEnd = 10 + (((NSUInteger)b[6] & 0x7F) << 21 | ((NSUInteger)b[7] & 0x7F) << 14 | ((NSUInteger)b[8] & 0x7F) << 7 | ((NSUInteger)b[9] & 0x7F));
+    NSString *number = [NSString stringWithFormat:@"%ld", (long)position];
+
+    for (NSUInteger offset = 10; offset + 10 <= tagEnd && offset + 10 <= file.length;) {
+        uint32_t size = ((uint32_t)b[offset + 4] << 24) | ((uint32_t)b[offset + 5] << 16) | ((uint32_t)b[offset + 6] << 8) | (uint32_t)b[offset + 7];
+        if (b[offset] == 0 || size == 0 || offset + 10 + size > file.length)
+            return NO;
+        if (memcmp(b + offset, "TRCK", 4) == 0) {
+            NSUInteger payload = offset + 10;
+            uint8_t encoding = b[payload];
+            NSData *newText = nil;
+            NSUInteger textStart = payload + 1;
+            if (encoding == 1) {
+                textStart += 2; // BOM
+                newText = [number dataUsingEncoding:NSUTF16LittleEndianStringEncoding];
+            } else if (encoding == 0) {
+                newText = [number dataUsingEncoding:NSASCIIStringEncoding];
+            }
+            NSUInteger oldLength = payload + size - textStart;
+            if (!newText || newText.length != oldLength)
+                return NO;
+            [file replaceBytesInRange:NSMakeRange(textStart, oldLength) withBytes:newText.bytes];
+            return [file writeToURL:fileURL atomically:YES];
+        }
+        offset += 10 + size;
+    }
+    return NO;
+}
+
 #pragma mark - Downloader
 
 @interface YTMUPlaylistDownloader ()
@@ -291,6 +328,9 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
 @property (nonatomic, strong) NSSet<NSString *> *knownTitles;
 @property (nonatomic) NSUInteger strayCount;
 @property (nonatomic) BOOL sawActivation;
+@property (nonatomic) BOOL titleIsGuess;          // page title couldn't be read
+@property (nonatomic, strong) NSSet<NSString *> *unavailableIDs; // "never played" last time
+@property (nonatomic, copy) NSString *format;     // @"m4a" or @"mp3"
 @property (nonatomic, strong) FFMpegDownloader *coverWriter;
 @end
 
@@ -430,7 +470,7 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
 
     self.running = YES;
     self.cancelled = NO;
-    self.isAlbum = [browseID hasPrefix:@"MPREb_"];
+    self.isAlbum = [browseID hasPrefix:@"MPREb_"] || [browseID hasPrefix:@"VLOLAK5uy_"];
     self.albumArtist = nil;
     self.albumYear = nil;
     self.albumCoverURL = nil;
@@ -457,7 +497,8 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
                 [self finishWithMessage:LOC(@"OOPS") details:@"Couldn't load the songs (private playlists aren't supported yet)" icon:@"xmark"];
                 return;
             }
-            [self confirmDownloadOfTracks:tracks title:title ?: @"Playlist"];
+            self.titleIsGuess = title.length == 0;
+            [self confirmDownloadOfTracks:tracks title:title.length ? title : (self.isAlbum ? @"Album" : @"Playlist")];
         });
     });
 }
@@ -640,14 +681,27 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     [data writeToURL:[folder URLByAppendingPathComponent:@".ytmu_index.json"] atomically:YES];
 }
 
+// m4a entries use the plain video ID (older runs), mp3 entries "mp3:<id>"
+- (NSString *)indexKeyForVideoID:(NSString *)videoID format:(NSString *)format {
+    return [format isEqualToString:@"mp3"] ? [@"mp3:" stringByAppendingString:videoID] : videoID;
+}
+
+- (NSString *)indexKeyForVideoID:(NSString *)videoID {
+    return [self indexKeyForVideoID:videoID format:self.format ?: @"m4a"];
+}
+
 - (BOOL)isTrackDownloaded:(YTMUPlaylistTrack *)track index:(NSDictionary *)index folder:(NSURL *)folder {
-    NSDictionary *entry = index[track.videoID];
+    return [self isTrackDownloaded:track index:index folder:folder format:self.format ?: @"m4a"];
+}
+
+- (BOOL)isTrackDownloaded:(YTMUPlaylistTrack *)track index:(NSDictionary *)index folder:(NSURL *)folder format:(NSString *)format {
+    NSDictionary *entry = index[[self indexKeyForVideoID:track.videoID format:format]];
     NSString *file = [entry isKindOfClass:[NSDictionary class]] ? entry[@"file"] : nil;
     return file && [[NSFileManager defaultManager] fileExistsAtPath:[folder URLByAppendingPathComponent:file].path];
 }
 
 - (NSString *)fileNameForTrack:(YTMUPlaylistTrack *)track {
-    return [NSString stringWithFormat:@"%ld. %@.m4a", (long)track.position, YTMUCleanName(track.title)];
+    return [NSString stringWithFormat:@"%ld. %@.%@", (long)track.position, YTMUCleanName(track.title), self.format ?: @"m4a"];
 }
 
 #pragma mark Confirm
@@ -658,19 +712,35 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
 
     NSURL *folder = [self folderForTitle:title];
     NSDictionary *index = [self loadIndexInFolder:folder];
-    NSUInteger existing = 0;
+    NSUInteger existingM4A = 0, existingMP3 = 0, unavailable = 0;
+    NSArray *unavailableList = [index[@"_unavailable"] isKindOfClass:[NSArray class]] ? index[@"_unavailable"] : @[];
     for (YTMUPlaylistTrack *track in tracks) {
-        if ([self isTrackDownloaded:track index:index folder:folder])
-            existing++;
+        BOOL hasM4A = [self isTrackDownloaded:track index:index folder:folder format:@"m4a"];
+        BOOL hasMP3 = [self isTrackDownloaded:track index:index folder:folder format:@"mp3"];
+        if (hasM4A)
+            existingM4A++;
+        if (hasMP3)
+            existingMP3++;
+        if (!hasM4A && !hasMP3 && [unavailableList containsObject:track.videoID])
+            unavailable++;
     }
-    NSUInteger missing = tracks.count - existing;
 
-    NSString *message = [NSString stringWithFormat:@"%lu songs, %lu already downloaded.\n\nAfter you confirm, press Play on this page. The player jumps through the songs while they download. Keep YTM open (tip: mute your phone).\n\nSaved in Files > YouTube Music > YTMusicUltimate > %@",
-                         (unsigned long)tracks.count, (unsigned long)existing, YTMUCleanName(title)];
+    NSString *unavailableNote = unavailable ? [NSString stringWithFormat:@"\n%lu weren't playable last time.", (unsigned long)unavailable] : @"";
+    NSString *message = [NSString stringWithFormat:@"%lu songs. Already downloaded: %lu as .m4a, %lu as .mp3.%@\n\n.m4a = original quality, fastest. .mp3 = converted (~190 kbps), a few seconds extra per song.\n\nAfter you confirm, press Play on this page. The player jumps through the songs while they download. Keep YTM open (tip: mute your phone).\n\nSaved in Files > YouTube Music > YTMusicUltimate > %@",
+                         (unsigned long)tracks.count, (unsigned long)existingM4A, (unsigned long)existingMP3, unavailableNote, YTMUCleanName(title)];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
 
-    NSString *actionTitle = missing > 0 ? [NSString stringWithFormat:@"Download %lu", (unsigned long)missing] : @"Update order only";
-    [alert addAction:[UIAlertAction actionWithTitle:actionTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    NSUInteger missingM4A = tracks.count - existingM4A;
+    NSUInteger missingMP3 = tracks.count - existingMP3;
+    NSString *m4aTitle = missingM4A ? [NSString stringWithFormat:@"Download %lu as .m4a", (unsigned long)missingM4A] : @"Update .m4a order only";
+    NSString *mp3Title = missingMP3 ? [NSString stringWithFormat:@"Download %lu as .mp3", (unsigned long)missingMP3] : @"Update .mp3 order only";
+
+    [alert addAction:[UIAlertAction actionWithTitle:m4aTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        self.format = @"m4a";
+        [self beginCaptureOfTracks:tracks title:title];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:mp3Title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        self.format = @"mp3";
         [self beginCaptureOfTracks:tracks title:title];
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:LOC(@"CANCEL") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
@@ -688,6 +758,8 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     [[NSFileManager defaultManager] createDirectoryAtURL:self.folder withIntermediateDirectories:YES attributes:nil error:nil];
 
     self.index = [self loadIndexInFolder:self.folder];
+    NSArray *unavailableList = [self.index[@"_unavailable"] isKindOfClass:[NSArray class]] ? self.index[@"_unavailable"] : @[];
+    self.unavailableIDs = [NSSet setWithArray:unavailableList];
     self.pending = [NSMutableDictionary dictionary];
     self.failures = [NSMutableArray array];
     self.coverWriter = [FFMpegDownloader new];
@@ -743,17 +815,21 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     NSFileManager *fm = [NSFileManager defaultManager];
     BOOL changed = NO;
     for (YTMUPlaylistTrack *track in tracks) {
-        NSMutableDictionary *entry = [self.index[track.videoID] mutableCopy];
+        NSString *key = [self indexKeyForVideoID:track.videoID];
+        NSMutableDictionary *entry = [self.index[key] mutableCopy];
         if ([entry[@"position"] integerValue] == track.position)
             continue;
         NSString *fileName = [self fileNameForTrack:track];
         NSURL *oldURL = [self.folder URLByAppendingPathComponent:entry[@"file"]];
         NSURL *newURL = [self.folder URLByAppendingPathComponent:fileName];
         if (![fm fileExistsAtPath:newURL.path] && [fm moveItemAtURL:oldURL toURL:newURL error:nil]) {
-            YTMUPatchTrackNumber(newURL, track.position);
+            if ([self.format isEqualToString:@"mp3"])
+                YTMUPatchMP3TrackNumber(newURL, track.position);
+            else
+                YTMUPatchTrackNumber(newURL, track.position);
             entry[@"file"] = fileName;
             entry[@"position"] = @(track.position);
-            self.index[track.videoID] = entry;
+            self.index[key] = entry;
             self.movedCount++;
             changed = YES;
         }
@@ -770,12 +846,26 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
 
     if (self.capturing && captured == 0 && !self.sawActivation) {
         // Tell the user where the missing songs start (skips rolling through old ones)
-        NSInteger first = NSIntegerMax;
-        for (YTMUPlaylistTrack *track in self.pending.allValues)
-            first = MIN(first, track.position);
-        details = (self.skippedCount > 0 && first != NSIntegerMax && first > 1)
-            ? [NSString stringWithFormat:@"Press Play, or tap song %ld to start there", (long)first]
-            : @"Press Play on this page now";
+        // First missing songs that were playable before (unplayable ones are still tried)
+        NSArray *ordered = [self.pending.allValues sortedArrayUsingComparator:^NSComparisonResult(YTMUPlaylistTrack *a, YTMUPlaylistTrack *b) {
+            return a.position < b.position ? NSOrderedAscending : (a.position > b.position ? NSOrderedDescending : NSOrderedSame);
+        }];
+        NSMutableArray<YTMUPlaylistTrack *> *candidates = [NSMutableArray array];
+        for (YTMUPlaylistTrack *track in ordered) {
+            if (![self.unavailableIDs containsObject:track.videoID])
+                [candidates addObject:track];
+            if (candidates.count == 2)
+                break;
+        }
+        YTMUPlaylistTrack *first = candidates.firstObject;
+        if (self.skippedCount > 0 && first && first.position > 1) {
+            details = [NSString stringWithFormat:@"Tap #%ld \"%@\" to start there", (long)first.position, first.title];
+            if (candidates.count > 1)
+                details = [details stringByAppendingFormat:@"\n(won't play? tap #%ld \"%@\")", (long)candidates[1].position, candidates[1].title];
+            details = [details stringByAppendingString:@"\nor press Play to start from the top"];
+        } else {
+            details = @"Press Play on this page now";
+        }
     } else if (self.capturing && captured == 0) {
         details = [NSString stringWithFormat:@"Skipping songs you already have… (%lu to download)", (unsigned long)total];
     } else {
@@ -786,7 +876,8 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
             details = [details stringByAppendingString:@"\nFinishing downloads…"];
     }
 
-    [self showStatus:self.collectionTitle details:details progress:total ? (float)finished / (float)total : 0];
+    NSString *statusTitle = [NSString stringWithFormat:@"%@ · .%@", self.collectionTitle ?: @"", self.format ?: @"m4a"];
+    [self showStatus:statusTitle details:details progress:total ? (float)finished / (float)total : 0];
 }
 
 // Posted by Downloading.x whenever the player starts a new song
@@ -895,6 +986,21 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
 
     NSString *author = [info[@"author"] isKindOfClass:[NSString class]] ? info[@"author"] : nil;
 
+    // Page title unknown: take album name + artist from the lock-screen info
+    if (self.titleIsGuess) {
+        self.titleIsGuess = NO;
+        NSDictionary *nowPlaying = YTMUCurrentNowPlayingInfo();
+        NSString *npAlbum = [nowPlaying[@"albumTitle"] isKindOfClass:[NSString class]] ? nowPlaying[@"albumTitle"] : nil;
+        NSString *npArtist = [nowPlaying[@"artist"] isKindOfClass:[NSString class]] ? nowPlaying[@"artist"] : nil;
+        if (npAlbum.length) {
+            self.collectionTitle = npAlbum;
+            self.folder = [self folderForTitle:npAlbum];
+            [[NSFileManager defaultManager] createDirectoryAtURL:self.folder withIntermediateDirectories:YES attributes:nil error:nil];
+            if (self.isAlbum && !self.albumArtist.length && npArtist.length)
+                self.albumArtist = npArtist;
+        }
+    }
+
     self.lastCapturedID = videoID;
     [self.pending removeObjectForKey:track.videoID];
     [self.pendingByTitle removeObjectForKey:YTMUTitleKey(track.title)];
@@ -945,8 +1051,20 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
         NSArray *remaining = [self.pending.allValues sortedArrayUsingComparator:^NSComparisonResult(YTMUPlaylistTrack *a, YTMUPlaylistTrack *b) {
             return a.position < b.position ? NSOrderedAscending : (a.position > b.position ? NSOrderedDescending : NSOrderedSame);
         }];
-        for (YTMUPlaylistTrack *track in remaining)
+        NSMutableArray<NSString *> *neverPlayed = [NSMutableArray array];
+        for (YTMUPlaylistTrack *track in remaining) {
             [self.failures addObject:[NSString stringWithFormat:@"%ld. %@ (never played, probably unavailable)", (long)track.position, track.title]];
+            [neverPlayed addObject:track.videoID];
+        }
+        // Remember them, so the start hint skips them next time
+        if (neverPlayed.count) {
+            dispatch_async(self.workQueue, ^{
+                NSMutableSet *all = [NSMutableSet setWithArray:[self.index[@"_unavailable"] isKindOfClass:[NSArray class]] ? self.index[@"_unavailable"] : @[]];
+                [all addObjectsFromArray:neverPlayed];
+                self.index[@"_unavailable"] = all.allObjects;
+                [self saveIndex:self.index inFolder:self.folder];
+            });
+        }
     }
     [self.pending removeAllObjects];
     [self updateStatus];
@@ -1060,20 +1178,37 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     NSString *coverURL = (self.isAlbum && self.albumCoverURL) ? self.albumCoverURL : track.thumbnailURL;
     UIImage *coverImage = coverURL ? [UIImage imageWithData:YTMUGet(coverURL)] : nil;
     NSData *jpeg = coverImage ? UIImageJPEGRepresentation(coverImage, 0.92) : nil;
-    if (jpeg)
+
+    NSString *finishedPath = tempPath;
+    if ([self.format isEqualToString:@"mp3"]) {
+        // Convert to MP3 (LAME) with ID3 tags + cover
+        NSString *mp3Path = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.mp3", track.videoID]];
+        NSString *error = [YTMUMP3Encoder convertFile:[NSURL fileURLWithPath:tempPath]
+                                                toMP3:[NSURL fileURLWithPath:mp3Path]
+                                             metadata:metadata
+                                            coverJPEG:jpeg];
+        [fm removeItemAtPath:tempPath error:nil];
+        if (error) {
+            [fm removeItemAtPath:mp3Path error:nil];
+            [self addFailure:[NSString stringWithFormat:@"%ld. %@ (mp3: %@)", (long)track.position, track.title, error]];
+            return;
+        }
+        finishedPath = mp3Path;
+    } else if (jpeg) {
         [self.coverWriter writeCoverAtom:jpeg intoFile:[NSURL fileURLWithPath:tempPath]];
+    }
 
     // Into the playlist folder
     NSString *fileName = [self fileNameForTrack:track];
     NSURL *finalURL = [self.folder URLByAppendingPathComponent:fileName];
     [fm removeItemAtURL:finalURL error:nil];
-    if (![fm moveItemAtURL:[NSURL fileURLWithPath:tempPath] toURL:finalURL error:nil]) {
-        [fm removeItemAtPath:tempPath error:nil];
+    if (![fm moveItemAtURL:[NSURL fileURLWithPath:finishedPath] toURL:finalURL error:nil]) {
+        [fm removeItemAtPath:finishedPath error:nil];
         [self addFailure:[NSString stringWithFormat:@"%ld. %@ (couldn't save file)", (long)track.position, track.title]];
         return;
     }
 
-    self.index[track.videoID] = [@{@"file": fileName, @"position": @(track.position)} mutableCopy];
+    self.index[[self indexKeyForVideoID:track.videoID]] = [@{@"file": fileName, @"position": @(track.position)} mutableCopy];
     [self saveIndex:self.index inFolder:self.folder];
 
     dispatch_async(dispatch_get_main_queue(), ^{
