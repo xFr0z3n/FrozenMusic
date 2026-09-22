@@ -503,6 +503,10 @@ static NSDictionary *YTMUNowPlayingInfo(void) {
     return [info isKindOfClass:[NSDictionary class]] ? info : nil;
 }
 
+NSDictionary *YTMUCurrentNowPlayingInfo(void) {
+    return YTMUNowPlayingInfo();
+}
+
 static NSString *YTMUBestThumbnailURL(id videoDetails) {
     id thumbnailDetails = YTMUSafeValue(videoDetails, @"thumbnail");
     id thumbnails = YTMUSafeValue(thumbnailDetails, @"thumbnailsArray");
