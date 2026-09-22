@@ -4,6 +4,7 @@
 #import <objc/message.h>
 #import "FFMpegDownloader.h"
 #import "PlaylistDownloader.h"
+#import "Offline/YTMUOfflinePlayer.h"
 #import "Headers/YTUIResources.h"
 #import "Headers/YTMActionSheetController.h"
 #import "Headers/YTMActionRowView.h"
@@ -604,11 +605,21 @@ static NSString *YTMUBestThumbnailURL(id videoDetails) {
 }
 %end
 
-// Tells the playlist downloader whenever the player starts a new song
+// YTM's player, so the offline player can pause it
+static __weak id ytmuAppPlayer = nil;
+
+void YTMUPauseAppPlayer(void) {
+    id player = ytmuAppPlayer;
+    if ([player respondsToSelector:@selector(pause)])
+        [player performSelector:@selector(pause)];
+}
+
+// Tells the playlist downloader / offline player whenever the player starts a new song
 // (same hook SponsorBlock.x uses)
 %hook YTPlayerViewController
 - (void)playbackController:(id)arg1 didActivateVideo:(id)arg2 withPlaybackData:(id)arg3 {
     %orig;
+    ytmuAppPlayer = self;
     [[NSNotificationCenter defaultCenter] postNotificationName:@"YTMUPlayerDidActivateVideo"
                                                         object:self
                                                       userInfo:arg2 ? @{@"video": arg2} : nil];
