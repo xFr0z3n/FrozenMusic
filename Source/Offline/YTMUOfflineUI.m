@@ -36,10 +36,6 @@ static UIColor *YTMUSecondaryText(void) {
     return [UIColor colorWithWhite:1.0 alpha:0.62];
 }
 
-static UIColor *YTMUAccent(void) {
-    return [UIColor colorWithRed:1.0 green:0.0 blue:0.2 alpha:1.0];
-}
-
 // Vertical gradient layer (class looked up at runtime, no extra linking)
 static CAGradientLayer *YTMUGradientLayer(UIColor *top) {
     CAGradientLayer *gradient = (CAGradientLayer *)[NSClassFromString(@"CAGradientLayer") layer];
