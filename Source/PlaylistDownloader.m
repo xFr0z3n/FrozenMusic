@@ -744,11 +744,12 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
 // Posted by Downloading.x whenever the player starts a new song
 - (void)playerDidActivate:(NSNotification *)notification {
     id player = notification.object;
+    id video = notification.userInfo[@"video"];
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.capturing)
             return;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self capturePlayer:player attempt:0];
+            [self capturePlayer:player video:video attempt:0];
         });
     });
 }
@@ -758,7 +759,7 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     return [videoID isKindOfClass:[NSString class]] && ((NSString *)videoID).length ? videoID : nil;
 }
 
-- (void)capturePlayer:(id)player attempt:(NSInteger)attempt {
+- (void)capturePlayer:(id)player video:(id)video attempt:(NSInteger)attempt {
     if (!self.capturing || !player)
         return;
 
@@ -766,7 +767,7 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     if (!videoID) {
         if (attempt < 6) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self capturePlayer:player attempt:attempt + 1];
+                [self capturePlayer:player video:video attempt:attempt + 1];
             });
         }
         return;
@@ -787,33 +788,29 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
         return;
     }
 
-    id response = YTMUObj(player, @"playerResponse");
-    id playerData = YTMUObj(response, @"playerData");
-    id streamingData = YTMUObj(playerData, @"streamingData");
-    NSString *hls = YTMUObj(streamingData, @"hlsManifestURL");
-    id videoDetails = YTMUObj(playerData, @"videoDetails");
-    NSString *responseID = YTMUObj(videoDetails, @"videoId");
+    // Search around the activated song + player for this song's stream
+    NSMutableArray *starts = [NSMutableArray array];
+    if (video)
+        [starts addObject:video];
+    [starts addObject:player];
+    NSDictionary *info = YTMUStreamInfoForVideo(starts, videoID);
+    NSString *hls = [info[@"hls"] isKindOfClass:[NSString class]] ? info[@"hls"] : nil;
 
-    // The response can still belong to the previous song for a moment
-    BOOL ready = [hls isKindOfClass:[NSString class]] && [hls length] &&
-                 (![responseID isKindOfClass:[NSString class]] || [responseID isEqualToString:videoID]);
-    if (!ready) {
+    if (!hls.length) {
         if (attempt < 8) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self capturePlayer:player attempt:attempt + 1];
+                [self capturePlayer:player video:video attempt:attempt + 1];
             });
         } else {
             self.lastCapturedID = videoID;
             [self.pending removeObjectForKey:videoID];
-            [self.failures addObject:[NSString stringWithFormat:@"%ld. %@ (player gave no stream)", (long)track.position, track.title]];
+            [self.failures addObject:[NSString stringWithFormat:@"%ld. %@ (no stream: %@)", (long)track.position, track.title, info[@"diag"] ?: @"?"]];
             [self afterCaptureInPlayer:player];
         }
         return;
     }
 
-    NSString *author = YTMUObj(videoDetails, @"author");
-    if (![author isKindOfClass:[NSString class]])
-        author = nil;
+    NSString *author = [info[@"author"] isKindOfClass:[NSString class]] ? info[@"author"] : nil;
 
     self.lastCapturedID = videoID;
     [self.pending removeObjectForKey:videoID];
