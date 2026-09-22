@@ -361,7 +361,6 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 @property (nonatomic, strong) NSTimer *watchdog;
 @property (nonatomic, copy) NSString *collectionCoverURL; // playlist / album cover for cover.png
 @property (nonatomic, copy) NSString *firstTrackCoverURL; // album fallback
-@property (nonatomic, strong) NSDictionary *lastBrowseResponse; // for _debug_title.json
 @property (nonatomic, strong) FFMpegDownloader *coverWriter;
 @end
 
@@ -501,7 +500,6 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 
     self.running = YES;
     self.cancelled = NO;
-    self.lastBrowseResponse = nil;
     self.isAlbum = [browseID hasPrefix:@"MPREb_"] || [browseID hasPrefix:@"VLOLAK5uy_"];
     self.albumArtist = nil;
     self.albumYear = nil;
@@ -538,8 +536,6 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
                 finalTitle = [self titleFromPageTextsExcluding:tracks];
             if (self.isAlbum)
                 [self fillAlbumInfoFromPageTexts];
-            if (!finalTitle.length)
-                [self writeTitleDebugForBrowseID:browseID pickedTitle:finalTitle];
             self.titleIsGuess = finalTitle.length == 0;
             [self confirmDownloadOfTracks:tracks title:finalTitle.length ? finalTitle : (self.isAlbum ? @"Album" : @"Playlist")];
         });
@@ -636,36 +632,6 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     return nil;
 }
 
-// Written only when the page title couldn't be read from YouTube's data
-- (void)writeTitleDebugForBrowseID:(NSString *)browseID pickedTitle:(NSString *)picked {
-    NSMutableDictionary *debug = [NSMutableDictionary dictionary];
-    debug[@"browseID"] = browseID ?: @"?";
-    debug[@"isAlbum"] = @(self.isAlbum);
-    debug[@"pickedFromPage"] = picked ?: @"(none)";
-    debug[@"pageTexts"] = self.pageTexts ?: @[];
-    debug[@"nowPlaying"] = [self jsonSafe:YTMUCurrentNowPlayingInfo()] ?: @{};
-    debug[@"response"] = self.lastBrowseResponse ?: @{};
-
-    NSURL *documents = [[[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask] lastObject];
-    NSURL *folder = [documents URLByAppendingPathComponent:@"YTMusicUltimate"];
-    [[NSFileManager defaultManager] createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:nil];
-    NSData *data = [NSJSONSerialization dataWithJSONObject:debug options:NSJSONWritingPrettyPrinted error:nil];
-    [data writeToURL:[folder URLByAppendingPathComponent:@"_debug_title.json"] atomically:YES];
-}
-
-// Lock-screen info contains non-JSON objects (artwork): keep strings/numbers only
-- (NSDictionary *)jsonSafe:(NSDictionary *)info {
-    NSMutableDictionary *safe = [NSMutableDictionary dictionary];
-    for (id key in info) {
-        id value = info[key];
-        if ([value isKindOfClass:[NSString class]] || [value isKindOfClass:[NSNumber class]])
-            safe[[key description]] = value;
-        else
-            safe[[key description]] = NSStringFromClass([value class]);
-    }
-    return safe;
-}
-
 #pragma mark Playlist fetching (InnerTube web API)
 
 - (NSDictionary *)webContext {
@@ -688,8 +654,6 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     NSDictionary *response = YTMUPostJSON(baseURL, @{@"context": [self webContext], @"browseId": browseID}, [self webHeaders]);
     if (!response)
         return tracks;
-    if (!self.lastBrowseResponse)
-        self.lastBrowseResponse = response;
 
     // Title (+ artist and year for albums) from the page header
     for (NSString *headerKey in @[@"musicResponsiveHeaderRenderer", @"musicDetailHeaderRenderer", @"musicEditablePlaylistDetailHeaderRenderer", @"musicImmersiveHeaderRenderer", @"musicVisualHeaderRenderer"]) {
