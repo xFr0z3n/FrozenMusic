@@ -276,6 +276,59 @@ NSDictionary *YTMUStreamInfoForVideo(NSArray *startObjects, NSString *videoID) {
     return @{@"diag": diag};
 }
 
+#pragma mark - Page texts (what VoiceOver would read)
+
+static void YTMUCollectTexts(id element, NSMutableArray<NSDictionary *> *output, NSHashTable *seen, NSUInteger depth) {
+    if (!element || depth > 30 || output.count >= 80 || [seen containsObject:element])
+        return;
+    [seen addObject:element];
+
+    NSString *label = nil;
+    UIAccessibilityTraits traits = 0;
+    @try {
+        if ([element respondsToSelector:@selector(accessibilityLabel)])
+            label = [element accessibilityLabel];
+        if ([element respondsToSelector:@selector(accessibilityTraits)])
+            traits = [element accessibilityTraits];
+    } @catch (__unused NSException *exception) {
+    }
+    if ([label isKindOfClass:[NSString class]] && label.length) {
+        [output addObject:@{
+            @"label": label,
+            @"header": @((traits & UIAccessibilityTraitHeader) != 0),
+            @"button": @((traits & UIAccessibilityTraitButton) != 0)
+        }];
+    }
+
+    NSArray *elements = nil;
+    @try {
+        if ([element respondsToSelector:@selector(accessibilityElements)])
+            elements = [element accessibilityElements];
+    } @catch (__unused NSException *exception) {
+    }
+    for (id child in elements)
+        YTMUCollectTexts(child, output, seen, depth + 1);
+    if ([element isKindOfClass:[UIView class]]) {
+        for (UIView *subview in ((UIView *)element).subviews)
+            YTMUCollectTexts(subview, output, seen, depth + 1);
+    }
+}
+
+// Texts in the page header around the tapped button (title, artist, year...)
+static NSArray<NSDictionary *> *YTMUHeaderTexts(UIView *view) {
+    UIViewController *vc = [view respondsToSelector:@selector(_viewControllerForAncestor)] ? view._viewControllerForAncestor : nil;
+    UIViewController *header = nil;
+    for (UIViewController *current = vc; current; current = current.parentViewController) {
+        if ([NSStringFromClass([current class]) containsString:@"Header"])
+            header = current; // outermost header
+    }
+    UIView *root = header.isViewLoaded ? header.view : view.superview;
+    NSMutableArray<NSDictionary *> *texts = [NSMutableArray array];
+    NSHashTable *seen = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
+    YTMUCollectTexts(root, texts, seen, 0);
+    return texts;
+}
+
 #pragma mark - Playlist page helpers
 
 // Download badge inside a page header (playlist, album, ...) and not Now Playing
@@ -593,7 +646,10 @@ static NSString *YTMUBestThumbnailURL(id videoDetails) {
     if (wantsAudio && YTMUIsCollectionHeader(tappedView)) {
         NSString *browseID = YTMUPlaylistBrowseID(tappedView);
         if (browseID.length) {
-            [[YTMUPlaylistDownloader sharedDownloader] startWithBrowseID:browseID];
+            YTMUPlaylistDownloader *downloader = [YTMUPlaylistDownloader sharedDownloader];
+            if (!downloader.running)
+                downloader.pageTexts = YTMUHeaderTexts(tappedView);
+            [downloader startWithBrowseID:browseID];
         } else {
             [UIPasteboard generalPasteboard].string = YTMUDebugReport(tappedView);
             YTAlertView *alertView = [%c(YTAlertView) infoDialog];
