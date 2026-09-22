@@ -361,6 +361,9 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 @property (nonatomic, strong) NSTimer *watchdog;
 @property (nonatomic, copy) NSString *collectionCoverURL; // playlist / album cover for cover.png
 @property (nonatomic, copy) NSString *firstTrackCoverURL; // album fallback
+@property (nonatomic, copy) NSString *collectionDetails;  // page description
+@property (nonatomic, copy) NSString *creatorName;        // playlist owner / album artist
+@property (nonatomic, copy) NSString *creatorImageURL;
 @property (nonatomic, strong) FFMpegDownloader *coverWriter;
 @end
 
@@ -506,6 +509,9 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     self.albumCoverURL = nil;
     self.collectionCoverURL = nil;
     self.firstTrackCoverURL = nil;
+    self.collectionDetails = nil;
+    self.creatorName = nil;
+    self.creatorImageURL = nil;
 
     // Device info is read here on the main thread
     struct utsname systemInfo;
@@ -536,6 +542,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
                 finalTitle = [self titleFromPageTextsExcluding:tracks];
             if (self.isAlbum)
                 [self fillAlbumInfoFromPageTexts];
+            if (!self.creatorName.length)
+                self.creatorName = self.isAlbum ? self.albumArtist : [self pageCreatorFromTexts];
             self.titleIsGuess = finalTitle.length == 0;
             [self confirmDownloadOfTracks:tracks title:finalTitle.length ? finalTitle : (self.isAlbum ? @"Album" : @"Playlist")];
         });
@@ -549,6 +557,25 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 }
 
 #pragma mark Title fallback from the page
+
+// Page text right before the title: the playlist owner / artist
+- (NSString *)pageCreatorFromTexts {
+    NSUInteger headingIndex = NSNotFound;
+    for (NSUInteger i = 0; i < self.pageTexts.count; i++) {
+        if ([self.pageTexts[i][@"header"] boolValue]) {
+            headingIndex = i;
+            break;
+        }
+    }
+    if (headingIndex == NSNotFound)
+        return nil;
+    for (NSUInteger i = 0; i < headingIndex; i++) {
+        NSString *label = self.pageTexts[i][@"label"];
+        if (label.length && label.length < 60 && ![label containsString:@"•"])
+            return label;
+    }
+    return nil;
+}
 
 - (NSString *)pageHeading {
     for (NSDictionary *text in self.pageTexts) {
@@ -664,6 +691,20 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
         if (titleOut)
             *titleOut = title;
 
+        // Creator (playlist owner / album artist) with its round picture
+        NSString *strapline = YTMUText(YTMUFindFirst(header, @"straplineTextOne"));
+        if (strapline.length && !self.creatorName.length)
+            self.creatorName = strapline;
+        NSArray *straplineThumbs = YTMUFindFirst(YTMUFindFirst(header, @"straplineThumbnail"), @"thumbnails");
+        NSString *straplineURL = [straplineThumbs isKindOfClass:[NSArray class]] ? YTMUPath(straplineThumbs, @[@-1, @"url"]) : nil;
+        if ([straplineURL isKindOfClass:[NSString class]] && !self.creatorImageURL)
+            self.creatorImageURL = YTMUBigThumbnail(straplineURL);
+
+        NSString *headerDetails = YTMUText(YTMUFindFirst(YTMUFindFirst(header, @"description"), @"description"))
+                                  ?: YTMUText(YTMUFindFirst(header, @"description"));
+        if (headerDetails.length && !self.collectionDetails.length)
+            self.collectionDetails = headerDetails;
+
         NSArray *headerThumbs = YTMUFindFirst(header, @"thumbnails");
         NSString *headerCover = [headerThumbs isKindOfClass:[NSArray class]] ? YTMUPath(headerThumbs, @[@-1, @"url"]) : nil;
         if ([headerCover isKindOfClass:[NSString class]] && !self.collectionCoverURL)
@@ -698,6 +739,12 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
                 self.albumCoverURL = YTMUBigThumbnail(coverURL);
         }
         break;
+    }
+
+    if (!self.collectionDetails.length) {
+        NSString *metaDetails = YTMUPath(response, @[@"microformat", @"microformatDataRenderer", @"description"]);
+        if ([metaDetails isKindOfClass:[NSString class]])
+            self.collectionDetails = metaDetails;
     }
 
     if (!self.collectionCoverURL) {
@@ -1322,12 +1369,26 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 
     // Let the renumber pass finish (and save cover.png) before summing up
     NSString *coverURL = self.collectionCoverURL ?: self.albumCoverURL ?: self.firstTrackCoverURL;
+    NSString *creatorURL = self.creatorImageURL;
+    NSString *creator = self.creatorName;
+    NSString *details = self.collectionDetails;
     NSURL *folder = self.folder;
     dispatch_async(self.workQueue, ^{
-        if (coverURL && folder && self.downloadedCount + self.skippedCount > 0) {
-            UIImage *cover = [UIImage imageWithData:YTMUGet(coverURL)];
-            NSData *png = cover ? UIImagePNGRepresentation(cover) : nil;
-            [png writeToURL:[folder URLByAppendingPathComponent:@"cover.png"] atomically:YES];
+        if (folder && self.downloadedCount + self.skippedCount > 0) {
+            if (coverURL) {
+                UIImage *cover = [UIImage imageWithData:YTMUGet(coverURL)];
+                NSData *png = cover ? UIImagePNGRepresentation(cover) : nil;
+                [png writeToURL:[folder URLByAppendingPathComponent:@"cover.png"] atomically:YES];
+            }
+            if (creatorURL) {
+                UIImage *image = [UIImage imageWithData:YTMUGet(creatorURL)];
+                NSData *png = image ? UIImagePNGRepresentation(image) : nil;
+                [png writeToURL:[folder URLByAppendingPathComponent:@"creator.png"] atomically:YES];
+            }
+            if (creator.length)
+                [creator writeToURL:[folder URLByAppendingPathComponent:@"creator.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            if (details.length)
+                [details writeToURL:[folder URLByAppendingPathComponent:@"description.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!self.running || self.capturing || self.queuedCount > 0)
