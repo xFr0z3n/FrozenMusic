@@ -144,6 +144,9 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
         UIImage *cover = [UIImage imageWithContentsOfFile:[url URLByAppendingPathComponent:@"cover.png"].path];
         collection.cover = cover ?: first.artwork;
+        collection.creatorImage = [UIImage imageWithContentsOfFile:[url URLByAppendingPathComponent:@"creator.png"].path];
+        collection.details = [NSString stringWithContentsOfURL:[url URLByAppendingPathComponent:@"description.txt"] encoding:NSUTF8StringEncoding error:nil];
+        collection.creator = [NSString stringWithContentsOfURL:[url URLByAppendingPathComponent:@"creator.txt"] encoding:NSUTF8StringEncoding error:nil];
         [collections addObject:collection];
     }
 
@@ -204,14 +207,90 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
 @end
 
+#pragma mark - Equalizer bars
+
+@interface YTMUEqualizerView ()
+@property (nonatomic, strong) NSArray<UIView *> *bars;
+@property (nonatomic) BOOL animating;
+@end
+
+@implementation YTMUEqualizerView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self)
+        return nil;
+    NSMutableArray<UIView *> *bars = [NSMutableArray array];
+    for (NSUInteger i = 0; i < 3; i++) {
+        UIView *bar = [UIView new];
+        bar.backgroundColor = [UIColor whiteColor];
+        bar.layer.cornerRadius = 1.0;
+        [self addSubview:bar];
+        [bars addObject:bar];
+    }
+    self.bars = bars;
+    return self;
+}
+
+- (CGSize)intrinsicContentSize {
+    return CGSizeMake(16, 14);
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat width = 3.0, gap = 2.5;
+    CGFloat height = self.bounds.size.height;
+    for (NSUInteger i = 0; i < self.bars.count; i++) {
+        UIView *bar = self.bars[i];
+        CGFloat barHeight = height * (i == 1 ? 1.0 : 0.66);
+        bar.layer.anchorPoint = CGPointMake(0.5, 1.0);
+        bar.frame = CGRectMake(i * (width + gap), height - barHeight, width, barHeight);
+        bar.center = CGPointMake(i * (width + gap) + width / 2.0, height);
+    }
+    if (self.animating)
+        [self startAnimations];
+}
+
+- (void)setAnimating:(BOOL)animating {
+    if (_animating == animating)
+        return;
+    _animating = animating;
+    if (animating)
+        [self startAnimations];
+    else
+        [self stopAnimations];
+}
+
+- (void)startAnimations {
+    NSArray<NSNumber *> *durations = @[@0.42, @0.30, @0.50];
+    for (NSUInteger i = 0; i < self.bars.count; i++) {
+        UIView *bar = self.bars[i];
+        [bar.layer removeAllAnimations];
+        CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:@"transform.scale.y"];
+        animation.fromValue = @0.25;
+        animation.toValue = @1.0;
+        animation.duration = durations[i].doubleValue;
+        animation.autoreverses = YES;
+        animation.repeatCount = HUGE_VALF;
+        [bar.layer addAnimation:animation forKey:@"bounce"];
+    }
+}
+
+- (void)stopAnimations {
+    for (UIView *bar in self.bars)
+        [bar.layer removeAllAnimations];
+}
+
+@end
+
 #pragma mark - Track cell
 
 @interface YTMUTrackCell ()
 @property (nonatomic, strong) UIImageView *artworkView;
-@property (nonatomic, strong) UILabel *numberLabel;
+@property (nonatomic, strong) UIView *equalizerBackground;
+@property (nonatomic, strong) YTMUEqualizerView *equalizer;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
-@property (nonatomic, strong) YTMUBadgeLabel *badge;
 @end
 
 @implementation YTMUTrackCell
@@ -233,12 +312,17 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     self.artworkView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
     self.artworkView.translatesAutoresizingMaskIntoConstraints = NO;
 
-    self.numberLabel = YTMULabel([UIFont monospacedDigitSystemFontOfSize:16 weight:UIFontWeightMedium], YTMUSecondaryText());
-    self.numberLabel.textAlignment = NSTextAlignmentCenter;
+    self.equalizerBackground = [UIView new];
+    self.equalizerBackground.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.45];
+    self.equalizerBackground.layer.cornerRadius = 4.0;
+    self.equalizerBackground.translatesAutoresizingMaskIntoConstraints = NO;
+    self.equalizerBackground.hidden = YES;
+
+    self.equalizer = [YTMUEqualizerView new];
+    self.equalizer.translatesAutoresizingMaskIntoConstraints = NO;
 
     self.titleLabel = YTMULabel([UIFont systemFontOfSize:16 weight:UIFontWeightSemibold], [UIColor whiteColor]);
     self.subtitleLabel = YTMULabel([UIFont systemFontOfSize:14], YTMUSecondaryText());
-    self.badge = [YTMUBadgeLabel badgeWithText:@""];
 
     UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[self.titleLabel, self.subtitleLabel]];
     texts.axis = UILayoutConstraintAxisVertical;
@@ -246,9 +330,9 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     texts.translatesAutoresizingMaskIntoConstraints = NO;
 
     [self.contentView addSubview:self.artworkView];
-    [self.contentView addSubview:self.numberLabel];
+    [self.contentView addSubview:self.equalizerBackground];
+    [self.equalizerBackground addSubview:self.equalizer];
     [self.contentView addSubview:texts];
-    [self.contentView addSubview:self.badge];
 
     [NSLayoutConstraint activateConstraints:@[
         [self.artworkView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
@@ -258,23 +342,25 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
         [self.artworkView.topAnchor constraintGreaterThanOrEqualToAnchor:self.contentView.topAnchor constant:8],
         [self.artworkView.bottomAnchor constraintLessThanOrEqualToAnchor:self.contentView.bottomAnchor constant:-8],
 
-        [self.numberLabel.centerXAnchor constraintEqualToAnchor:self.artworkView.centerXAnchor],
-        [self.numberLabel.centerYAnchor constraintEqualToAnchor:self.artworkView.centerYAnchor],
+        [self.equalizerBackground.leadingAnchor constraintEqualToAnchor:self.artworkView.leadingAnchor],
+        [self.equalizerBackground.trailingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor],
+        [self.equalizerBackground.topAnchor constraintEqualToAnchor:self.artworkView.topAnchor],
+        [self.equalizerBackground.bottomAnchor constraintEqualToAnchor:self.artworkView.bottomAnchor],
+        [self.equalizer.centerXAnchor constraintEqualToAnchor:self.equalizerBackground.centerXAnchor],
+        [self.equalizer.centerYAnchor constraintEqualToAnchor:self.equalizerBackground.centerYAnchor],
+        [self.equalizer.widthAnchor constraintEqualToConstant:16],
+        [self.equalizer.heightAnchor constraintEqualToConstant:14],
 
         [texts.leadingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor constant:14],
         [texts.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-        [texts.trailingAnchor constraintLessThanOrEqualToAnchor:self.badge.leadingAnchor constant:-10],
-
-        [self.badge.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
-        [self.badge.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [texts.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
         [self.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:64]
     ]];
     return self;
 }
 
-- (void)configureWithTrack:(YTMUOfflineTrack *)track showNumber:(BOOL)showNumber isCurrent:(BOOL)isCurrent {
+- (void)configureWithTrack:(YTMUOfflineTrack *)track isCurrent:(BOOL)isCurrent isPlaying:(BOOL)isPlaying {
     self.titleLabel.text = track.title;
-    self.titleLabel.textColor = isCurrent ? YTMUAccent() : [UIColor whiteColor];
 
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
     if (track.artist.length)
@@ -283,13 +369,9 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
         [parts addObject:YTMUFormatTime(track.duration)];
     self.subtitleLabel.text = [parts componentsJoinedByString:@" • "];
 
-    self.badge.text = [@"." stringByAppendingString:track.format ?: @""];
-    [self.badge invalidateIntrinsicContentSize];
-
-    self.numberLabel.hidden = !showNumber;
-    self.artworkView.hidden = showNumber;
-    self.numberLabel.text = track.number > 0 ? [NSString stringWithFormat:@"%ld", (long)track.number] : @"–";
-    self.artworkView.image = showNumber ? nil : track.artwork;
+    self.artworkView.image = track.artwork;
+    self.equalizerBackground.hidden = !isCurrent;
+    [self.equalizer setAnimating:isCurrent && isPlaying];
 }
 
 @end
@@ -300,7 +382,6 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 @property (nonatomic, strong) UIImageView *coverView;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
-@property (nonatomic, strong) UIStackView *badges;
 @end
 
 @implementation YTMUCollectionCell
@@ -323,25 +404,11 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     self.coverView.translatesAutoresizingMaskIntoConstraints = NO;
 
     self.titleLabel = YTMULabel([UIFont systemFontOfSize:17 weight:UIFontWeightSemibold], [UIColor whiteColor]);
+    self.titleLabel.numberOfLines = 2;
     self.subtitleLabel = YTMULabel([UIFont systemFontOfSize:14], YTMUSecondaryText());
     self.subtitleLabel.numberOfLines = 2;
 
-    self.badges = [UIStackView new];
-    self.badges.axis = UILayoutConstraintAxisHorizontal;
-    self.badges.spacing = 6;
-    self.badges.alignment = UIStackViewAlignmentLeading;
-
-    UIView *badgeRow = [UIView new];
-    self.badges.translatesAutoresizingMaskIntoConstraints = NO;
-    [badgeRow addSubview:self.badges];
-    [NSLayoutConstraint activateConstraints:@[
-        [self.badges.leadingAnchor constraintEqualToAnchor:badgeRow.leadingAnchor],
-        [self.badges.topAnchor constraintEqualToAnchor:badgeRow.topAnchor],
-        [self.badges.bottomAnchor constraintEqualToAnchor:badgeRow.bottomAnchor],
-        [self.badges.trailingAnchor constraintLessThanOrEqualToAnchor:badgeRow.trailingAnchor]
-    ]];
-
-    UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[self.titleLabel, self.subtitleLabel, badgeRow]];
+    UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[self.titleLabel, self.subtitleLabel]];
     texts.axis = UILayoutConstraintAxisVertical;
     texts.spacing = 4;
     texts.translatesAutoresizingMaskIntoConstraints = NO;
@@ -369,12 +436,6 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     self.coverView.image = collection.cover;
     self.titleLabel.text = collection.name;
     self.subtitleLabel.text = collection.subtitle;
-    for (UIView *view in [self.badges.arrangedSubviews copy]) {
-        [self.badges removeArrangedSubview:view];
-        [view removeFromSuperview];
-    }
-    for (NSString *format in collection.formats)
-        [self.badges addArrangedSubview:[YTMUBadgeLabel badgeWithText:[@"." stringByAppendingString:format]]];
 }
 
 @end
@@ -413,8 +474,8 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     self.titleLabel = YTMULabel([UIFont systemFontOfSize:15 weight:UIFontWeightSemibold], [UIColor whiteColor]);
     self.artistLabel = YTMULabel([UIFont systemFontOfSize:13], YTMUSecondaryText());
 
-    self.playButton = YTMUIconButton(@"play.fill", 22, [UIColor whiteColor]);
-    self.nextButton = YTMUIconButton(@"forward.end.fill", 20, [UIColor whiteColor]);
+    self.playButton = YTMUIconButton(@"play.fill", 18, [UIColor whiteColor]);
+    self.nextButton = YTMUIconButton(@"forward.end.fill", 17, [UIColor whiteColor]);
     [self.playButton addTarget:self action:@selector(playTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.nextButton addTarget:self action:@selector(nextTapped) forControlEvents:UIControlEventTouchUpInside];
 
@@ -441,12 +502,12 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
         [texts.centerYAnchor constraintEqualToAnchor:self.artworkView.centerYAnchor],
         [texts.trailingAnchor constraintLessThanOrEqualToAnchor:self.playButton.leadingAnchor constant:-12],
 
-        [self.nextButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-16],
-        [self.nextButton.centerYAnchor constraintEqualToAnchor:self.artworkView.centerYAnchor],
-        [self.nextButton.widthAnchor constraintEqualToConstant:36],
-        [self.playButton.trailingAnchor constraintEqualToAnchor:self.nextButton.leadingAnchor constant:-12],
+        [self.playButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-16],
         [self.playButton.centerYAnchor constraintEqualToAnchor:self.artworkView.centerYAnchor],
-        [self.playButton.widthAnchor constraintEqualToConstant:36]
+        [self.playButton.widthAnchor constraintEqualToConstant:34],
+        [self.nextButton.trailingAnchor constraintEqualToAnchor:self.playButton.leadingAnchor constant:-10],
+        [self.nextButton.centerYAnchor constraintEqualToAnchor:self.artworkView.centerYAnchor],
+        [self.nextButton.widthAnchor constraintEqualToConstant:34]
     ]];
 
     [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openNowPlaying)]];
@@ -465,11 +526,16 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 - (void)refresh {
     YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
     YTMUOfflineTrack *track = player.currentTrack;
-    self.hidden = track == nil;
+    BOOL visible = track != nil;
+    if (self.hidden == visible) {
+        self.hidden = !visible;
+        if (self.onVisibilityChange)
+            self.onVisibilityChange(visible);
+    }
     self.artworkView.image = track.artwork;
     self.titleLabel.text = track.title;
     self.artistLabel.text = track.artist;
-    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
     [self.playButton setImage:[UIImage systemImageNamed:player.isPlaying ? @"pause.fill" : @"play.fill" withConfiguration:config] forState:UIControlStateNormal];
     [self refreshProgress];
 }
@@ -502,7 +568,6 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 @property (nonatomic, strong) UIImageView *artworkView;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *artistLabel;
-@property (nonatomic, strong) YTMUBadgeLabel *badge;
 @property (nonatomic, strong) UISlider *slider;
 @property (nonatomic, strong) UILabel *elapsedLabel;
 @property (nonatomic, strong) UILabel *remainingLabel;
@@ -539,8 +604,6 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
     self.titleLabel = YTMULabel([UIFont systemFontOfSize:24 weight:UIFontWeightBold], [UIColor whiteColor]);
     self.artistLabel = YTMULabel([UIFont systemFontOfSize:17], YTMUSecondaryText());
-    self.badge = [YTMUBadgeLabel badgeWithText:@""];
-
     self.slider = [UISlider new];
     self.slider.minimumTrackTintColor = [UIColor whiteColor];
     self.slider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.25];
@@ -572,7 +635,7 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     controls.alignment = UIStackViewAlignmentCenter;
     controls.translatesAutoresizingMaskIntoConstraints = NO;
 
-    for (UIView *view in @[closeButton, self.artworkView, self.titleLabel, self.artistLabel, self.badge, self.slider, self.elapsedLabel, self.remainingLabel, controls])
+    for (UIView *view in @[closeButton, self.artworkView, self.titleLabel, self.artistLabel, self.slider, self.elapsedLabel, self.remainingLabel, controls])
         [self.view addSubview:view];
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
@@ -589,9 +652,7 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
         [self.titleLabel.topAnchor constraintEqualToAnchor:self.artworkView.bottomAnchor constant:36],
         [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.artworkView.leadingAnchor],
-        [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.badge.leadingAnchor constant:-10],
-        [self.badge.trailingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor],
-        [self.badge.centerYAnchor constraintEqualToAnchor:self.titleLabel.centerYAnchor],
+        [self.titleLabel.trailingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor],
 
         [self.artistLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:4],
         [self.artistLabel.leadingAnchor constraintEqualToAnchor:self.artworkView.leadingAnchor],
@@ -643,8 +704,6 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     self.artworkView.image = track.artwork;
     self.titleLabel.text = track.title;
     self.artistLabel.text = track.artist;
-    self.badge.text = [@"." stringByAppendingString:track.format ?: @""];
-    [self.badge invalidateIntrinsicContentSize];
     self.gradient.colors = @[(id)YTMUAverageColor(track.artwork).CGColor, (id)YTMUBackground().CGColor];
 
     UIImageSymbolConfiguration *playConfig = [UIImageSymbolConfiguration configurationWithPointSize:32 weight:UIImageSymbolWeightSemibold];
@@ -720,6 +779,10 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 @property (nonatomic, strong) CAGradientLayer *gradient;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @property (nonatomic, strong) YTMUMiniPlayerView *miniPlayer;
+@property (nonatomic, strong) NSLayoutConstraint *miniPlayerHeight;
+@property (nonatomic, strong) UILabel *detailsLabel;
+@property (nonatomic, strong) UIButton *moreButton;
+@property (nonatomic) BOOL detailsExpanded;
 @end
 
 @implementation YTMUCollectionViewController
@@ -758,9 +821,16 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     self.miniPlayer.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.miniPlayer];
 
-    UIButton *backButton = YTMUIconButton(@"chevron.left", 20, [UIColor whiteColor]);
+    self.miniPlayerHeight = [self.miniPlayer.heightAnchor constraintEqualToConstant:0];
+    self.miniPlayerHeight.active = YES;
+    __weak __typeof(self) weakSelf = self;
+    self.miniPlayer.onVisibilityChange = ^(BOOL visible) {
+        weakSelf.miniPlayerHeight.constant = visible ? 64 + weakSelf.view.safeAreaInsets.bottom : 0;
+    };
+
+    UIButton *backButton = YTMUIconButton(@"chevron.left", 16, [UIColor whiteColor]);
     backButton.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.35];
-    backButton.layer.cornerRadius = 20;
+    backButton.layer.cornerRadius = 16;
     [backButton addTarget:self action:@selector(back) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:backButton];
 
@@ -773,12 +843,11 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
         [self.miniPlayer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.miniPlayer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.miniPlayer.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [self.miniPlayer.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-64],
 
         [backButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:12],
         [backButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:6],
-        [backButton.widthAnchor constraintEqualToConstant:40],
-        [backButton.heightAnchor constraintEqualToConstant:40]
+        [backButton.widthAnchor constraintEqualToConstant:32],
+        [backButton.heightAnchor constraintEqualToConstant:32]
     ]];
 
     [self buildHeader];
@@ -824,7 +893,27 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     UILabel *title = YTMULabel([UIFont systemFontOfSize:28 weight:UIFontWeightBold], [UIColor whiteColor]);
     title.text = self.collection.name;
     title.textAlignment = NSTextAlignmentCenter;
-    title.numberOfLines = 2;
+    title.numberOfLines = 3;
+
+    // Creator: round picture + name, like YTM
+    UIImageView *creatorImage = [[UIImageView alloc] initWithImage:self.collection.creatorImage];
+    creatorImage.contentMode = UIViewContentModeScaleAspectFill;
+    creatorImage.clipsToBounds = YES;
+    creatorImage.layer.cornerRadius = 14.0;
+    creatorImage.translatesAutoresizingMaskIntoConstraints = NO;
+    [creatorImage.widthAnchor constraintEqualToConstant:28].active = YES;
+    [creatorImage.heightAnchor constraintEqualToConstant:28].active = YES;
+    creatorImage.hidden = self.collection.creatorImage == nil;
+
+    UILabel *creatorLabel = YTMULabel([UIFont systemFontOfSize:15 weight:UIFontWeightMedium], [UIColor whiteColor]);
+    creatorLabel.text = self.collection.creator;
+
+    UIStackView *creatorRow = [[UIStackView alloc] initWithArrangedSubviews:@[creatorImage, creatorLabel]];
+    creatorRow.axis = UILayoutConstraintAxisHorizontal;
+    creatorRow.spacing = 8;
+    creatorRow.alignment = UIStackViewAlignmentCenter;
+    creatorRow.translatesAutoresizingMaskIntoConstraints = NO;
+    creatorRow.hidden = self.collection.creator.length == 0;
 
     UILabel *subtitle = YTMULabel([UIFont systemFontOfSize:15], YTMUSecondaryText());
     subtitle.text = self.collection.subtitle;
@@ -838,20 +927,35 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     for (NSString *format in self.collection.formats)
         [badges addArrangedSubview:[YTMUBadgeLabel badgeWithText:[@"." stringByAppendingString:format]]];
 
+    // Description, 2 lines with "...More"
+    self.detailsLabel = YTMULabel([UIFont systemFontOfSize:14], YTMUSecondaryText());
+    self.detailsLabel.text = [self.collection.details stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    self.detailsLabel.textAlignment = NSTextAlignmentCenter;
+    self.detailsLabel.numberOfLines = 2;
+    self.detailsLabel.hidden = self.detailsLabel.text.length == 0;
+
+    self.moreButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.moreButton setTitle:@"...More" forState:UIControlStateNormal];
+    [self.moreButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    self.moreButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    self.moreButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.moreButton.hidden = self.detailsLabel.hidden;
+    [self.moreButton addTarget:self action:@selector(toggleDetails) forControlEvents:UIControlEventTouchUpInside];
+
     UIButton *shuffle = YTMUCircleButton(@"shuffle", 52, 20, [UIColor colorWithWhite:1.0 alpha:0.12], [UIColor whiteColor]);
     UIButton *play = YTMUCircleButton(@"play.fill", 68, 28, [UIColor whiteColor], [UIColor blackColor]);
-    UIButton *share = YTMUCircleButton(@"square.and.arrow.up", 52, 20, [UIColor colorWithWhite:1.0 alpha:0.12], [UIColor whiteColor]);
+    UIButton *menu = YTMUCircleButton(@"ellipsis", 52, 20, [UIColor colorWithWhite:1.0 alpha:0.12], [UIColor whiteColor]);
     [shuffle addTarget:self action:@selector(shuffleAll) forControlEvents:UIControlEventTouchUpInside];
     [play addTarget:self action:@selector(playAll) forControlEvents:UIControlEventTouchUpInside];
-    [share addTarget:self action:@selector(shareAll:) forControlEvents:UIControlEventTouchUpInside];
+    [menu addTarget:self action:@selector(showMenu:) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[shuffle, play, share]];
+    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[shuffle, play, menu]];
     buttons.axis = UILayoutConstraintAxisHorizontal;
     buttons.spacing = 28;
     buttons.alignment = UIStackViewAlignmentCenter;
     buttons.translatesAutoresizingMaskIntoConstraints = NO;
 
-    for (UIView *view in @[cover, title, subtitle, badges, buttons])
+    for (UIView *view in @[cover, title, creatorRow, subtitle, badges, self.detailsLabel, self.moreButton, buttons])
         [header addSubview:view];
 
     CGFloat top = UIApplication.sharedApplication.keyWindow.safeAreaInsets.top + 56;
@@ -861,23 +965,75 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
         [cover.widthAnchor constraintEqualToConstant:240],
         [cover.heightAnchor constraintEqualToConstant:240],
 
-        [title.topAnchor constraintEqualToAnchor:cover.bottomAnchor constant:24],
+        [title.topAnchor constraintEqualToAnchor:cover.bottomAnchor constant:22],
         [title.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:24],
         [title.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-24],
 
-        [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:8],
+        [creatorRow.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:10],
+        [creatorRow.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
+
+        [subtitle.topAnchor constraintEqualToAnchor:creatorRow.bottomAnchor constant:10],
         [subtitle.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:24],
         [subtitle.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-24],
 
-        [badges.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:10],
+        [badges.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:8],
         [badges.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
 
-        [buttons.topAnchor constraintEqualToAnchor:badges.bottomAnchor constant:22],
+        [self.detailsLabel.topAnchor constraintEqualToAnchor:badges.bottomAnchor constant:14],
+        [self.detailsLabel.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:24],
+        [self.detailsLabel.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-24],
+
+        [self.moreButton.topAnchor constraintEqualToAnchor:self.detailsLabel.bottomAnchor constant:2],
+        [self.moreButton.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
+
+        [buttons.topAnchor constraintEqualToAnchor:self.moreButton.bottomAnchor constant:18],
         [buttons.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
         [buttons.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-20]
     ]];
 
     self.headerView = header;
+}
+
+- (void)toggleDetails {
+    self.detailsExpanded = !self.detailsExpanded;
+    self.detailsLabel.numberOfLines = self.detailsExpanded ? 0 : 2;
+    [self.moreButton setTitle:self.detailsExpanded ? @"Less" : @"...More" forState:UIControlStateNormal];
+    [self.headerView setNeedsLayout];
+    [self.headerView layoutIfNeeded];
+    [self.view setNeedsLayout];
+}
+
+- (void)showMenu:(UIButton *)sender {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:self.collection.name
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        YTMUShare(self.collection.files, self, sender);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [self confirmDeleteCollection];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sender;
+    sheet.popoverPresentationController.sourceRect = sender.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)confirmDeleteCollection {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:self.collection.name
+                                                                   message:@"Delete all downloaded songs of this playlist?"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+        if ([player.currentTrack.url.path hasPrefix:self.collection.folder.path])
+            [player stop];
+        [[NSFileManager defaultManager] removeItemAtURL:self.collection.folder error:nil];
+        if (self.onChange)
+            self.onChange();
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -928,9 +1084,9 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     YTMUTrackCell *cell = [tableView dequeueReusableCellWithIdentifier:@"track" forIndexPath:indexPath];
     YTMUOfflineTrack *track = self.tracks[(NSUInteger)indexPath.row];
-    BOOL isCurrent = [[YTMUOfflinePlayer shared].currentTrack.url isEqual:track.url];
-    // Albums show track numbers, playlists the song artwork (like YTM)
-    [cell configureWithTrack:track showNumber:self.collection.isAlbum isCurrent:isCurrent];
+    YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+    BOOL isCurrent = [player.currentTrack.url isEqual:track.url];
+    [cell configureWithTrack:track isCurrent:isCurrent isPlaying:player.isPlaying];
     return cell;
 }
 
