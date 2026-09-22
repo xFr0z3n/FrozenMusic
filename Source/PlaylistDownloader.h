@@ -16,5 +16,7 @@ FOUNDATION_EXPORT NSDictionary *YTMUCurrentNowPlayingInfo(void);
 @interface YTMUPlaylistDownloader : NSObject
 + (instancetype)sharedDownloader;
 @property (nonatomic, readonly) BOOL running;
+// Texts shown on the page (from accessibility), set right before start: fallback for the title
+@property (nonatomic, copy) NSArray<NSDictionary *> *pageTexts;
 - (void)startWithBrowseID:(NSString *)browseID; // "VLPL..." from the playlist page
 @end
