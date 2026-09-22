@@ -492,7 +492,15 @@ static NSString *YTMUCleanArtist(NSString *artist) {
 
 // What YTM shows on the lock screen for the current song (has the album name).
 // String keys = MPMediaItemProperty* values, so no MediaPlayer linking needed.
+// Last lock-screen info YTM set (YTM uses its own player session, so the
+// global MPNowPlayingInfoCenter can be empty - the hook below catches it)
+static NSDictionary *ytmuLastNowPlayingInfo = nil;
+
 static NSDictionary *YTMUNowPlayingInfo(void) {
+    @synchronized ([NSNull class]) {
+        if (ytmuLastNowPlayingInfo.count)
+            return ytmuLastNowPlayingInfo;
+    }
     Class centerClass = NSClassFromString(@"MPNowPlayingInfoCenter");
     if (!centerClass)
         return nil;
@@ -528,6 +536,20 @@ static NSString *YTMUBestThumbnailURL(id videoDetails) {
 }
 
 #pragma mark - Hook
+
+@interface MPNowPlayingInfoCenter : NSObject
+@end
+
+%hook MPNowPlayingInfoCenter
+- (void)setNowPlayingInfo:(NSDictionary *)info {
+    %orig;
+    if ([info isKindOfClass:[NSDictionary class]] && info.count) {
+        @synchronized ([NSNull class]) {
+            ytmuLastNowPlayingInfo = [info copy];
+        }
+    }
+}
+%end
 
 // Tells the playlist downloader whenever the player starts a new song
 // (same hook SponsorBlock.x uses)
