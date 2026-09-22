@@ -12,12 +12,15 @@
 @property (nonatomic) BOOL isAlbum;
 @property (nonatomic, copy) NSString *artist;
 @property (nonatomic, copy) NSString *year;
+@property (nonatomic, copy) NSString *details;               // description.txt
+@property (nonatomic, copy) NSString *creator;               // creator.txt
+@property (nonatomic, strong) UIImage *creatorImage;         // creator.png
 
 + (NSArray<NSURL *> *)audioFilesInFolder:(NSURL *)folder;
 // Every subfolder with audio in it. Reads only the first song's tags (fast).
 + (NSArray<YTMUCollection *> *)collectionsInFolder:(NSURL *)root;
 - (NSArray<YTMUOfflineTrack *> *)loadTracks; // reads all songs (slow, off main thread)
-- (NSString *)subtitle;                      // "Album • C418 • 2013" / "Playlist • 51 songs"
+- (NSString *)subtitle;                      // "Album • C418 • 2013 • 30 songs"
 @end
 
 #pragma mark - Shared helpers
@@ -29,10 +32,15 @@ FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 + (instancetype)badgeWithText:(NSString *)text;
 @end
 
+// The 3 bars YTM shows on the song that's playing
+@interface YTMUEqualizerView : UIView
+- (void)setAnimating:(BOOL)animating;
+@end
+
 #pragma mark - Cells
 
 @interface YTMUTrackCell : UITableViewCell
-- (void)configureWithTrack:(YTMUOfflineTrack *)track showNumber:(BOOL)showNumber isCurrent:(BOOL)isCurrent;
+- (void)configureWithTrack:(YTMUOfflineTrack *)track isCurrent:(BOOL)isCurrent isPlaying:(BOOL)isPlaying;
 @end
 
 @interface YTMUCollectionCell : UITableViewCell
@@ -54,4 +62,5 @@ FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 // Small bar with the current song, tap opens Now Playing
 @interface YTMUMiniPlayerView : UIView
 @property (nonatomic, weak) UIViewController *presenter;
+@property (nonatomic, copy) void (^onVisibilityChange)(BOOL visible);
 @end
