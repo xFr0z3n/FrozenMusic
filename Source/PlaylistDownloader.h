@@ -7,6 +7,10 @@
 // name, track = playlist position, comment = YouTube Music link, embedded cover.
 // Songs already downloaded (tracked by video ID) are skipped; if a song moved
 // in the playlist, its file is renamed and its track number updated.
+// Implemented in Downloading.x: finds the stream of `videoID` around the player.
+// Returns @{@"hls": ..., @"author": ...} or @{@"diag": ...}
+FOUNDATION_EXPORT NSDictionary *YTMUStreamInfoForVideo(NSArray *startObjects, NSString *videoID);
+
 @interface YTMUPlaylistDownloader : NSObject
 + (instancetype)sharedDownloader;
 @property (nonatomic, readonly) BOOL running;
