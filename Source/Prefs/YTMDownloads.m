@@ -293,6 +293,23 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
     [self presentViewController:activity animated:YES completion:nil];
 }
 
+- (void)confirmDeleteURL:(NSURL *)url name:(NSString *)name extraURL:(NSURL *)extraURL {
+    YTAlertView *alertView = [NSClassFromString(@"YTAlertView") confirmationDialogWithAction:^{
+        YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+        if ([player.currentTrack.url.path hasPrefix:url.path])
+            [player stop];
+        [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+        if (extraURL)
+            [[NSFileManager defaultManager] removeItemAtURL:extraURL error:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self reloadData];
+        });
+    } actionTitle:LOC(@"DELETE")];
+    alertView.title = @"YTMusicUltimate";
+    alertView.subtitle = [NSString stringWithFormat:LOC(@"DELETE_MESSAGE"), name];
+    [alertView show];
+}
+
 - (void)renameSong:(YTMUOfflineTrack *)track {
     NSURL *audioURL = track.url;
     NSURL *coverURL = [[audioURL URLByDeletingPathExtension] URLByAppendingPathExtension:@"png"];
