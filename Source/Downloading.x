@@ -175,6 +175,104 @@ static UIViewController *YTMUNowPlayingController(UIView *view) {
     return nil;
 }
 
+#pragma mark - Stream lookup for the playlist downloader
+
+static void YTMUAddPlayerScreens(UIViewController *vc, NSMutableArray *output, NSUInteger depth) {
+    if (!vc || depth > 12)
+        return;
+    NSString *name = NSStringFromClass([vc class]);
+    if ([name containsString:@"NowPlaying"] || [name containsString:@"Watch"] || [name containsString:@"PlayerViewController"])
+        [output addObject:vc];
+    for (UIViewController *child in vc.childViewControllers)
+        YTMUAddPlayerScreens(child, output, depth + 1);
+    YTMUAddPlayerScreens(vc.presentedViewController, output, depth + 1);
+}
+
+// Same kind of search as the single-song download, but it only accepts the
+// stream of `videoID`. Returns @{hls, author} or @{diag} describing what it saw.
+NSDictionary *YTMUStreamInfoForVideo(NSArray *startObjects, NSString *videoID) {
+    Class wrapperClass = NSClassFromString(@"YTPlayerResponse");
+    Class protoClass = NSClassFromString(@"YTIPlayerResponse");
+
+    NSMutableArray *starts = [NSMutableArray array];
+    for (id object in startObjects) {
+        if (object && object != [NSNull null])
+            [starts addObject:object];
+    }
+    YTMUAddPlayerScreens([UIApplication sharedApplication].keyWindow.rootViewController, starts, 0);
+
+    NSArray<NSString *> *keys = @[
+        @"playerResponse", @"_playerResponse", @"playerData", @"_playerData",
+        @"activeVideo", @"_activeVideo", @"singleVideo", @"_singleVideo",
+        @"contentVideo", @"_contentVideo", @"videoController", @"_videoController",
+        @"playerViewController", @"_playerViewController",
+        @"playerController", @"_playerController",
+        @"player", @"_player",
+        @"playerViewDelegate", @"_playerViewDelegate",
+        @"parentViewController", @"parentResponder", @"_parentResponder",
+        @"delegate", @"_delegate"
+    ];
+
+    NSHashTable *visited = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality | NSPointerFunctionsWeakMemory];
+    NSMutableArray *queue = [starts mutableCopy];
+    NSMutableArray<NSNumber *> *depths = [NSMutableArray array];
+    for (NSUInteger i = 0; i < queue.count; i++)
+        [depths addObject:@0];
+
+    NSMutableArray<NSString *> *seen = [NSMutableArray array];
+    NSUInteger inspected = 0;
+
+    while (queue.count > 0 && inspected < 600) {
+        id object = queue.firstObject;
+        NSInteger depth = depths.firstObject.integerValue;
+        [queue removeObjectAtIndex:0];
+        [depths removeObjectAtIndex:0];
+        if ([visited containsObject:object])
+            continue;
+        [visited addObject:object];
+        inspected++;
+
+        id proto = nil;
+        if (wrapperClass && [object isKindOfClass:wrapperClass])
+            proto = YTMUSafeValue(object, @"playerData");
+        else if (protoClass && [object isKindOfClass:protoClass])
+            proto = object;
+
+        if (proto) {
+            NSString *hls = YTMUSafeString(YTMUSafeValue(proto, @"streamingData"), @"hlsManifestURL");
+            id details = YTMUSafeValue(proto, @"videoDetails");
+            NSString *responseID = YTMUSafeString(details, @"videoId");
+            if (hls.length && (!responseID.length || [responseID isEqualToString:videoID])) {
+                NSMutableDictionary *result = [NSMutableDictionary dictionary];
+                result[@"hls"] = hls;
+                NSString *author = YTMUSafeString(details, @"author");
+                if (author)
+                    result[@"author"] = author;
+                return result;
+            }
+            NSString *note = [NSString stringWithFormat:@"%@%@", responseID.length ? responseID : @"?", hls.length ? @"+hls" : @"-hls"];
+            if (![seen containsObject:note] && seen.count < 6)
+                [seen addObject:note];
+            continue;
+        }
+
+        if (depth >= 8)
+            continue;
+
+        for (NSString *key in keys) {
+            id next = YTMUSafeValue(object, key);
+            if (next && ![visited containsObject:next]) {
+                [queue addObject:next];
+                [depths addObject:@(depth + 1)];
+            }
+        }
+    }
+
+    NSString *diag = [NSString stringWithFormat:@"want %@, found %@, %lu objects checked",
+                      videoID ?: @"?", seen.count ? [seen componentsJoinedByString:@" "] : @"no player data", (unsigned long)inspected];
+    return @{@"diag": diag};
+}
+
 #pragma mark - Playlist page helpers
 
 // Download badge inside a page header (playlist, album, ...) and not Now Playing
@@ -429,7 +527,9 @@ static NSString *YTMUBestThumbnailURL(id videoDetails) {
 %hook YTPlayerViewController
 - (void)playbackController:(id)arg1 didActivateVideo:(id)arg2 withPlaybackData:(id)arg3 {
     %orig;
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"YTMUPlayerDidActivateVideo" object:self];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"YTMUPlayerDidActivateVideo"
+                                                        object:self
+                                                      userInfo:arg2 ? @{@"video": arg2} : nil];
 }
 %end
 
