@@ -10,6 +10,8 @@
 // Implemented in Downloading.x: finds the stream of `videoID` around the player.
 // Returns @{@"hls": ..., @"author": ...} or @{@"diag": ...}
 FOUNDATION_EXPORT NSDictionary *YTMUStreamInfoForVideo(NSArray *startObjects, NSString *videoID);
+// Implemented in Downloading.x: the lock-screen info (title, artist, albumTitle) of the current song
+FOUNDATION_EXPORT NSDictionary *YTMUCurrentNowPlayingInfo(void);
 
 @interface YTMUPlaylistDownloader : NSObject
 + (instancetype)sharedDownloader;
