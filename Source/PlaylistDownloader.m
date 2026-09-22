@@ -203,6 +203,10 @@ static id YTMUObj(id object, NSString *key) {
     }
 }
 
+static NSString *YTMUTitleKey(NSString *title) {
+    return [[title lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] ?: @"";
+}
+
 #pragma mark - Track number patch (m4a "trkn" tag, same size, in place)
 
 static uint32_t YTMUBE32(const uint8_t *bytes) {
@@ -283,6 +287,10 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
 @property (atomic) NSUInteger movedCount;
 @property (nonatomic, strong) NSMutableArray<NSString *> *failures;
 @property (nonatomic, copy) NSString *lastCapturedID;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, YTMUPlaylistTrack *> *pendingByTitle;
+@property (nonatomic, strong) NSSet<NSString *> *knownTitles;
+@property (nonatomic) NSUInteger strayCount;
+@property (nonatomic) BOOL sawActivation;
 @property (nonatomic, strong) FFMpegDownloader *coverWriter;
 @end
 
@@ -484,7 +492,7 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
         return tracks;
 
     // Title (+ artist and year for albums) from the page header
-    for (NSString *headerKey in @[@"musicResponsiveHeaderRenderer", @"musicDetailHeaderRenderer", @"musicEditablePlaylistDetailHeaderRenderer"]) {
+    for (NSString *headerKey in @[@"musicResponsiveHeaderRenderer", @"musicDetailHeaderRenderer", @"musicEditablePlaylistDetailHeaderRenderer", @"musicImmersiveHeaderRenderer", @"musicVisualHeaderRenderer"]) {
         id header = YTMUFindFirst(response, headerKey);
         NSString *title = YTMUText(YTMUFindFirst(header, @"title"));
         if (!title.length)
@@ -521,6 +529,28 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
                 self.albumCoverURL = YTMUBigThumbnail(coverURL);
         }
         break;
+    }
+
+    // Title fallback: page description, e.g. "Minecraft - Volume Beta - Album by C418"
+    if (titleOut && !(*titleOut).length) {
+        NSString *metaTitle = YTMUPath(response, @[@"microformat", @"microformatDataRenderer", @"title"]);
+        if ([metaTitle isKindOfClass:[NSString class]] && metaTitle.length) {
+            for (NSString *marker in @[@" - Album by ", @" - EP by ", @" - Single by ", @" - Playlist by "]) {
+                NSRange range = [metaTitle rangeOfString:marker options:NSBackwardsSearch];
+                if (range.location != NSNotFound) {
+                    if (self.isAlbum && !self.albumArtist.length)
+                        self.albumArtist = [metaTitle substringFromIndex:NSMaxRange(range)];
+                    metaTitle = [metaTitle substringToIndex:range.location];
+                    break;
+                }
+            }
+            *titleOut = metaTitle;
+        }
+    }
+    if (titleOut && !(*titleOut).length) {
+        NSString *anyTitle = YTMUText(YTMUFindFirst(YTMUFindFirst(response, @"header"), @"title"));
+        if (anyTitle.length)
+            *titleOut = anyTitle;
     }
 
     // Only look inside the track list, not suggestions etc.
@@ -667,18 +697,28 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     self.movedCount = 0;
     self.lastCapturedID = nil;
 
+    self.pendingByTitle = [NSMutableDictionary dictionary];
+    self.strayCount = 0;
+    self.sawActivation = NO;
+
     NSMutableSet<NSString *> *allIDs = [NSMutableSet set];
+    NSMutableSet<NSString *> *titles = [NSMutableSet set];
     NSMutableArray<YTMUPlaylistTrack *> *existing = [NSMutableArray array];
     for (YTMUPlaylistTrack *track in tracks) {
         [allIDs addObject:track.videoID];
+        NSString *titleKey = YTMUTitleKey(track.title);
+        [titles addObject:titleKey];
         if ([self isTrackDownloaded:track index:self.index folder:self.folder]) {
             [existing addObject:track];
             self.skippedCount++;
         } else {
             self.pending[track.videoID] = track;
+            if (!self.pendingByTitle[titleKey])
+                self.pendingByTitle[titleKey] = track;
         }
     }
     self.allVideoIDs = allIDs;
+    self.knownTitles = titles;
     self.totalToDownload = self.pending.count;
 
     [self beginKeepAlive];
@@ -728,8 +768,16 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     NSUInteger finished = self.downloadedCount + self.failures.count;
     NSString *details;
 
-    if (self.capturing && captured == 0) {
-        details = @"Press Play on this playlist now";
+    if (self.capturing && captured == 0 && !self.sawActivation) {
+        // Tell the user where the missing songs start (skips rolling through old ones)
+        NSInteger first = NSIntegerMax;
+        for (YTMUPlaylistTrack *track in self.pending.allValues)
+            first = MIN(first, track.position);
+        details = (self.skippedCount > 0 && first != NSIntegerMax && first > 1)
+            ? [NSString stringWithFormat:@"Press Play, or tap song %ld to start there", (long)first]
+            : @"Press Play on this page now";
+    } else if (self.capturing && captured == 0) {
+        details = [NSString stringWithFormat:@"Skipping songs you already have… (%lu to download)", (unsigned long)total];
     } else {
         details = [NSString stringWithFormat:@"Captured %lu / %lu · saved %lu", (unsigned long)captured, (unsigned long)total, (unsigned long)self.downloadedCount];
         if (self.failures.count)
@@ -748,6 +796,21 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.capturing)
             return;
+        if (!self.sawActivation) {
+            self.sawActivation = YES;
+            [self updateStatus];
+        }
+
+        // Song we already have: skip right away, no need to wait for its data
+        NSString *videoID = [self videoIDOfPlayer:player];
+        // (the ID can still be the previous song's for a moment, that one equals lastCapturedID)
+        if (videoID && ![videoID isEqualToString:self.lastCapturedID] &&
+            !self.pending[videoID] && [self.allVideoIDs containsObject:videoID]) {
+            self.lastCapturedID = videoID;
+            [self skipAheadInPlayer:player attempt:0];
+            return;
+        }
+
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self capturePlayer:player video:video attempt:0];
         });
@@ -775,16 +838,12 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     if ([videoID isEqualToString:self.lastCapturedID])
         return;
 
+    // Known song we already have
     YTMUPlaylistTrack *track = self.pending[videoID];
-    if (!track) {
-        if ([self.allVideoIDs containsObject:videoID]) {
-            // Already downloaded earlier: just move on
-            self.lastCapturedID = videoID;
-            [self skipAheadInPlayer:player attempt:0];
-        } else if (self.pending.count < self.totalToDownload) {
-            // A song from outside the playlist: the playlist has ended
-            [self endCaptureListingMissing:YES];
-        }
+    if (!track && [self.allVideoIDs containsObject:videoID]) {
+        self.lastCapturedID = videoID;
+        self.strayCount = 0;
+        [self skipAheadInPlayer:player attempt:0];
         return;
     }
 
@@ -796,24 +855,49 @@ static BOOL YTMUPatchTrackNumber(NSURL *fileURL, NSInteger position) {
     NSDictionary *info = YTMUStreamInfoForVideo(starts, videoID);
     NSString *hls = [info[@"hls"] isKindOfClass:[NSString class]] ? info[@"hls"] : nil;
 
-    if (!hls.length) {
-        if (attempt < 8) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self capturePlayer:player video:video attempt:attempt + 1];
-            });
+    if (!hls.length && attempt < 8) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self capturePlayer:player video:video attempt:attempt + 1];
+        });
+        return;
+    }
+
+    // YTM sometimes plays another version (other video ID) of a playlist song: match by title
+    NSString *playingTitle = [info[@"title"] isKindOfClass:[NSString class]] ? info[@"title"] : nil;
+    if (!track && playingTitle)
+        track = self.pendingByTitle[YTMUTitleKey(playingTitle)];
+
+    if (!track) {
+        self.lastCapturedID = videoID;
+        if (playingTitle && [self.knownTitles containsObject:YTMUTitleKey(playingTitle)]) {
+            self.strayCount = 0; // other version of a song we already have
         } else {
-            self.lastCapturedID = videoID;
-            [self.pending removeObjectForKey:videoID];
-            [self.failures addObject:[NSString stringWithFormat:@"%ld. %@ (no stream: %@)", (long)track.position, track.title, info[@"diag"] ?: @"?"]];
-            [self afterCaptureInPlayer:player];
+            self.strayCount++;
+            // Several songs in a row that aren't in the list: autoplay after the end
+            if (self.strayCount >= 3 && self.pending.count < self.totalToDownload) {
+                [self endCaptureListingMissing:YES];
+                return;
+            }
         }
+        [self skipAheadInPlayer:player attempt:0];
+        return;
+    }
+    self.strayCount = 0;
+
+    if (!hls.length) {
+        self.lastCapturedID = videoID;
+        [self.pending removeObjectForKey:track.videoID];
+        [self.pendingByTitle removeObjectForKey:YTMUTitleKey(track.title)];
+        [self.failures addObject:[NSString stringWithFormat:@"%ld. %@ (no stream: %@)", (long)track.position, track.title, info[@"diag"] ?: @"?"]];
+        [self afterCaptureInPlayer:player];
         return;
     }
 
     NSString *author = [info[@"author"] isKindOfClass:[NSString class]] ? info[@"author"] : nil;
 
     self.lastCapturedID = videoID;
-    [self.pending removeObjectForKey:videoID];
+    [self.pending removeObjectForKey:track.videoID];
+    [self.pendingByTitle removeObjectForKey:YTMUTitleKey(track.title)];
     self.queuedCount++;
 
     dispatch_async(self.workQueue, ^{
