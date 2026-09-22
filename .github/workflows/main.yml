@@ -107,7 +107,10 @@ jobs:
           sed -i '' '/lame_init_old/d' include/libmp3lame.sym
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           export CC="$(xcrun --sdk iphoneos -f clang)"
-          export CFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=13.0 -O2"
+          # CPPFLAGS: configure's header checks need the SDK too (else it falls back to old bcopy code)
+          export CPPFLAGS="-arch arm64 -isysroot $SDK"
+          # LAME is 2017 C code: keep modern clang's strict checks as warnings
+          export CFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=13.0 -O2 -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=int-conversion"
           export LDFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=13.0"
           ./configure --host=arm-apple-darwin --disable-shared --enable-static \
             --disable-frontend --disable-decoder --prefix="$RUNNER_TEMP/lame-out"
