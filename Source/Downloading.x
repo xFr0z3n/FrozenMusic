@@ -248,6 +248,9 @@ NSDictionary *YTMUStreamInfoForVideo(NSArray *startObjects, NSString *videoID) {
                 NSString *author = YTMUSafeString(details, @"author");
                 if (author)
                     result[@"author"] = author;
+                NSString *title = YTMUSafeString(details, @"title");
+                if (title)
+                    result[@"title"] = title;
                 return result;
             }
             NSString *note = [NSString stringWithFormat:@"%@%@", responseID.length ? responseID : @"?", hls.length ? @"+hls" : @"-hls"];
