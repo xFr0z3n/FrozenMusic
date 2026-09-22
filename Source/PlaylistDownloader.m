@@ -12,6 +12,7 @@
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *artist;
 @property (nonatomic, copy) NSString *thumbnailURL;
+@property (nonatomic, copy) NSString *album; // 3rd column in the web track list
 @end
 
 @implementation YTMUPlaylistTrack
@@ -530,11 +531,15 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
                 [self finishWithMessage:LOC(@"OOPS") details:@"Couldn't load the songs (private playlists aren't supported yet)" icon:@"xmark"];
                 return;
             }
-            NSString *finalTitle = title;
-            if (!finalTitle.length) {
+            // The page itself is the most reliable source for albums
+            NSString *pageTitle = [self pageHeading];
+            NSString *finalTitle = (self.isAlbum && pageTitle.length) ? pageTitle : title;
+            if (!finalTitle.length)
                 finalTitle = [self titleFromPageTextsExcluding:tracks];
+            if (self.isAlbum)
+                [self fillAlbumInfoFromPageTexts];
+            if (!finalTitle.length)
                 [self writeTitleDebugForBrowseID:browseID pickedTitle:finalTitle];
-            }
             self.titleIsGuess = finalTitle.length == 0;
             [self confirmDownloadOfTracks:tracks title:finalTitle.length ? finalTitle : (self.isAlbum ? @"Album" : @"Playlist")];
         });
@@ -549,6 +554,51 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 
 #pragma mark Title fallback from the page
 
+- (NSString *)pageHeading {
+    for (NSDictionary *text in self.pageTexts) {
+        NSString *label = text[@"label"];
+        if ([text[@"header"] boolValue] && ![text[@"button"] boolValue] && label.length)
+            return label;
+    }
+    return nil;
+}
+
+// Album page header reads like: "Yeat" (artist button), "90 comments • 2026", "COCOON" (heading)
+- (void)fillAlbumInfoFromPageTexts {
+    NSUInteger headingIndex = NSNotFound;
+    for (NSUInteger i = 0; i < self.pageTexts.count; i++) {
+        if ([self.pageTexts[i][@"header"] boolValue]) {
+            headingIndex = i;
+            break;
+        }
+    }
+
+    if (!self.albumArtist.length && headingIndex != NSNotFound) {
+        for (NSUInteger i = 0; i < headingIndex; i++) {
+            NSDictionary *text = self.pageTexts[i];
+            NSString *label = text[@"label"];
+            if ([text[@"button"] boolValue] && label.length && label.length < 60 && ![label containsString:@"•"]) {
+                self.albumArtist = label;
+                break;
+            }
+        }
+    }
+
+    if (!self.albumYear.length) {
+        NSRegularExpression *yearRegex = [NSRegularExpression regularExpressionWithPattern:@"\\b(19|20)\\d{2}\\b" options:0 error:nil];
+        for (NSDictionary *text in self.pageTexts) {
+            NSString *label = text[@"label"];
+            if (![label containsString:@"•"])
+                continue;
+            NSTextCheckingResult *match = [yearRegex firstMatchInString:label options:0 range:NSMakeRange(0, label.length)];
+            if (match) {
+                self.albumYear = [label substringWithRange:match.range];
+                break;
+            }
+        }
+    }
+}
+
 - (NSString *)titleFromPageTextsExcluding:(NSArray<YTMUPlaylistTrack *> *)tracks {
     NSMutableSet<NSString *> *exclude = [NSMutableSet set];
     for (YTMUPlaylistTrack *track in tracks) {
@@ -559,10 +609,10 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     }
     NSArray *noise = @[@"download", @"play", @"shuffle", @"save", @"more", @"comments", @"share", @"edit", @"back", @"search", @"add a song", @"library", @"home", @"samples", @"downloads"];
 
-    // 1. Something marked as a heading
+    // 1. Something marked as a heading (also when a song has the same name)
     for (NSDictionary *text in self.pageTexts) {
         NSString *label = text[@"label"];
-        if ([text[@"header"] boolValue] && ![text[@"button"] boolValue] && ![exclude containsObject:label.lowercaseString])
+        if ([text[@"header"] boolValue] && ![text[@"button"] boolValue] && label.length)
             return label;
     }
     // 2. First plain text that isn't a button, a stats line or a song on the page
@@ -740,6 +790,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
             track.videoID = videoID;
             track.title = YTMUText(YTMUPath(columns, @[@0, @"musicResponsiveListItemFlexColumnRenderer", @"text"])) ?: @"Unknown";
             track.artist = YTMUText(YTMUPath(columns, @[@1, @"musicResponsiveListItemFlexColumnRenderer", @"text"]));
+            track.album = YTMUText(YTMUPath(columns, @[@2, @"musicResponsiveListItemFlexColumnRenderer", @"text"]));
             NSString *thumb = YTMUPath(item, @[@"thumbnail", @"musicThumbnailRenderer", @"thumbnail", @"thumbnails", @-1, @"url"]);
             track.thumbnailURL = [thumb isKindOfClass:[NSString class]] ? YTMUBigThumbnail(thumb) : nil;
             [tracks addObject:track];
@@ -766,6 +817,31 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
         dispatch_async(dispatch_get_main_queue(), ^{
             self.hud.detailsLabel.text = [NSString stringWithFormat:@"%lu songs found", (unsigned long)tracks.count];
         });
+    }
+
+    // Album data without a header (album playlists): most common album / artist of its songs
+    if (self.isAlbum && titleOut && !(*titleOut).length && tracks.count) {
+        NSCountedSet<NSString *> *albums = [NSCountedSet set];
+        NSCountedSet<NSString *> *artists = [NSCountedSet set];
+        for (YTMUPlaylistTrack *track in tracks) {
+            if (track.album.length)
+                [albums addObject:track.album];
+            if (track.artist.length)
+                [artists addObject:track.artist];
+        }
+        NSString *bestAlbum = nil, *bestArtist = nil;
+        for (NSString *album in albums) {
+            if (!bestAlbum || [albums countForObject:album] > [albums countForObject:bestAlbum])
+                bestAlbum = album;
+        }
+        for (NSString *artist in artists) {
+            if (!bestArtist || [artists countForObject:artist] > [artists countForObject:bestArtist])
+                bestArtist = artist;
+        }
+        if (bestAlbum.length)
+            *titleOut = bestAlbum;
+        if (!self.albumArtist.length && bestArtist.length)
+            self.albumArtist = bestArtist;
     }
 
     // Album page without a readable track list: load the album's playlist form instead
