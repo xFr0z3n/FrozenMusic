@@ -1,4 +1,5 @@
 #import "FFMpegDownloader.h"
+#import "MP3Encoder.h"
 
 // iTunes-style JPEG data type (value of kCMMetadataBaseDataType_JPEG),
 // written as a literal so CoreMedia doesn't have to be linked
@@ -33,8 +34,8 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
     NSURL *folderURL = [documentsURL URLByAppendingPathComponent:@"YTMusicUltimate"];
     NSURL *rawURL = [documentsURL URLByAppendingPathComponent:[NSString stringWithFormat:@"%@.m4a", self.tempName]];
     NSURL *taggedURL = [documentsURL URLByAppendingPathComponent:[NSString stringWithFormat:@"%@_tagged.m4a", self.tempName]];
-    NSURL *outputURL = [folderURL URLByAppendingPathComponent:[NSString stringWithFormat:@"%@.m4a", self.mediaName]];
-    NSURL *coverURL = [folderURL URLByAppendingPathComponent:[NSString stringWithFormat:@"%@.png", self.mediaName]];
+    BOOL wantsMP3 = [self.format isEqualToString:@"mp3"];
+    NSURL *outputURL = [folderURL URLByAppendingPathComponent:[NSString stringWithFormat:@"%@.%@", self.mediaName, wantsMP3 ? @"mp3" : @"m4a"]];
 
     [fm createDirectoryAtURL:folderURL withIntermediateDirectories:YES attributes:nil error:nil];
     [fm removeItemAtURL:rawURL error:nil];
@@ -61,23 +62,43 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
                     self.hud.detailsLabel.text = @"100%";
                 }
 
-                [self finalizeCover:coverData metadata:metadata inputURL:rawURL fallbackURL:taggedURL completion:^(NSURL *finishedURL) {
-
-                    [fm removeItemAtURL:outputURL error:nil]; // re-download overwrites
-                    BOOL isMoved = [fm moveItemAtURL:finishedURL toURL:outputURL error:nil];
+                void (^finish)(BOOL) = ^(BOOL saved) {
                     [fm removeItemAtURL:rawURL error:nil];
                     [fm removeItemAtURL:taggedURL error:nil];
-
-                    // Separate cover next to the file, used by the Downloads tab
-                    if (isMoved && coverData.length > 0)
-                        [coverData writeToURL:coverURL atomically:YES];
-
-                    if (isMoved) {
+                    if (saved) {
                         [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadDataNotification" object:nil];
                         [self showResultWithText:LOC(@"DONE") icon:@"checkmark" delay:3.0];
                     } else {
                         [self showResultWithText:LOC(@"OOPS") icon:@"xmark" delay:3.0];
                     }
+                };
+
+                if (wantsMP3) {
+                    // LAME + ID3 tags with the cover inside the file
+                    self.hud.mode = MBProgressHUDModeIndeterminate;
+                    self.hud.detailsLabel.text = @"MP3…";
+                    UIImage *coverImage = coverData.length ? [UIImage imageWithData:coverData] : nil;
+                    NSData *jpeg = coverImage ? UIImageJPEGRepresentation(coverImage, 0.92) : nil;
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                        NSURL *mp3URL = [documentsURL URLByAppendingPathComponent:[NSString stringWithFormat:@"%@.mp3", self.tempName]];
+                        NSString *error = [YTMUMP3Encoder convertFile:rawURL toMP3:mp3URL metadata:metadata coverJPEG:jpeg];
+                        BOOL saved = NO;
+                        if (!error) {
+                            [fm removeItemAtURL:outputURL error:nil]; // re-download overwrites
+                            saved = [fm moveItemAtURL:mp3URL toURL:outputURL error:nil];
+                        }
+                        [fm removeItemAtURL:mp3URL error:nil];
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            finish(saved);
+                        });
+                    });
+                    return;
+                }
+
+                // m4a: tags from ffmpeg, cover written into the file
+                [self finalizeCover:coverData metadata:metadata inputURL:rawURL fallbackURL:taggedURL completion:^(NSURL *finishedURL) {
+                    [fm removeItemAtURL:outputURL error:nil]; // re-download overwrites
+                    finish([fm moveItemAtURL:finishedURL toURL:outputURL error:nil]);
                 }];
             } else if (returnCode == RETURN_CODE_CANCEL) {
                 [self.hud hideAnimated:YES];

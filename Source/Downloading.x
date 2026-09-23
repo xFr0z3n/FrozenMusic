@@ -683,7 +683,7 @@ void YTMUPauseAppPlayer(void) {
 %end
 
 @interface ELMTouchCommandPropertiesHandler : NSObject
-- (void)ytmu_downloadAudio:(YTMUTrackInfo *)info;
+- (void)ytmu_downloadAudio:(YTMUTrackInfo *)info format:(NSString *)format;
 - (void)ytmu_downloadCoverImage:(YTMUTrackInfo *)info;
 - (NSString *)ytmu_audioURLFromManifest:(NSURL *)manifest;
 @end
@@ -745,17 +745,18 @@ void YTMUPauseAppPlayer(void) {
         return;
     }
 
-    if (wantsAudio && wantsCover) {
+    if (wantsAudio) {
+        // Song file with all tags + cover inside, as .m4a or .mp3
         YTMActionSheetController *sheetController = [%c(YTMActionSheetController) musicActionSheetController];
         sheetController.sourceView = tappedView;
         [sheetController addHeaderWithTitle:LOC(@"SELECT_ACTION") subtitle:nil];
 
-        [sheetController addAction:[%c(YTActionSheetAction) actionWithTitle:LOC(@"DOWNLOAD_AUDIO") iconImage:[%c(YTUIResources) audioOutline] style:0 handler:^ {
-            [self ytmu_downloadAudio:info];
+        [sheetController addAction:[%c(YTActionSheetAction) actionWithTitle:@"Download .m4a" iconImage:[%c(YTUIResources) audioOutline] style:0 handler:^ {
+            [self ytmu_downloadAudio:info format:@"m4a"];
         }]];
 
-        [sheetController addAction:[%c(YTActionSheetAction) actionWithTitle:LOC(@"DOWNLOAD_COVER") iconImage:[%c(YTUIResources) outlineImageWithColor:[UIColor whiteColor]] style:0 handler:^ {
-            [self ytmu_downloadCoverImage:info];
+        [sheetController addAction:[%c(YTActionSheetAction) actionWithTitle:@"Download .mp3" iconImage:[%c(YTUIResources) audioOutline] style:0 handler:^ {
+            [self ytmu_downloadAudio:info format:@"mp3"];
         }]];
 
         [sheetController addAction:[%c(YTActionSheetAction) actionWithTitle:LOC(@"DOWNLOAD_PREMIUM") iconImage:[%c(YTUIResources) downloadOutline] secondaryIconImage:[%c(YTUIResources) youtubePremiumBadgeLight] accessibilityIdentifier:nil handler:^ {
@@ -763,15 +764,13 @@ void YTMUPauseAppPlayer(void) {
         }]];
 
         [sheetController presentFromViewController:playingVC animated:YES completion:nil];
-    } else if (wantsAudio) {
-        [self ytmu_downloadAudio:info];
     } else {
         [self ytmu_downloadCoverImage:info];
     }
 }
 
 %new
-- (void)ytmu_downloadAudio:(YTMUTrackInfo *)info {
+- (void)ytmu_downloadAudio:(YTMUTrackInfo *)info format:(NSString *)format {
     id playerData = YTMUSafeValue(info.playerResponse, @"playerData");
     id videoDetails = YTMUSafeValue(playerData, @"videoDetails");
 
@@ -830,6 +829,7 @@ void YTMUPauseAppPlayer(void) {
             ffmpeg.tempName = tempName;
             ffmpeg.mediaName = mediaName;
             ffmpeg.duration = (NSInteger)round(duration);
+            ffmpeg.format = format;
             [ffmpeg downloadAudio:audioURL metadata:metadata coverData:coverData];
         });
     });

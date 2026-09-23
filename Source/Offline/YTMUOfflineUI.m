@@ -67,6 +67,24 @@ static UIColor *YTMUSecondaryText(void) {
     return [UIColor colorWithWhite:1.0 alpha:0.62];
 }
 
+// YTM-style hue: the cover shrunk to 3x3 pixels (a strong blur), darkened.
+// Shown stretched with linear filtering it becomes a soft multi-color glow.
+static UIImage *YTMUBackdropImage(UIImage *cover) {
+    CGImageRef cgImage = cover.CGImage;
+    if (!cgImage)
+        return nil;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = 1.0;
+    format.opaque = YES;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(3, 3) format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextSetInterpolationQuality(context.CGContext, kCGInterpolationHigh);
+        [cover drawInRect:CGRectMake(0, 0, 3, 3)];
+        [[UIColor colorWithWhite:0.0 alpha:0.58] setFill];
+        UIRectFillUsingBlendMode(CGRectMake(0, 0, 3, 3), kCGBlendModeNormal);
+    }];
+}
+
 // Vertical gradient layer (class looked up at runtime, no extra linking)
 static CAGradientLayer *YTMUGradientLayer(UIColor *top) {
     CAGradientLayer *gradient = (CAGradientLayer *)[NSClassFromString(@"CAGradientLayer") layer];
@@ -903,6 +921,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 - (void)updateMiniPlayerHeight;
 @property (nonatomic, strong) UIButton *moreButton;
 @property (nonatomic, strong) UIStackView *detailsSpacingColumn;
+@property (nonatomic, strong) CALayer *backdrop;
 @property (nonatomic) BOOL detailsExpanded;
 @end
 
@@ -1019,9 +1038,17 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 - (void)buildHeader {
     UIView *header = [UIView new];
     // Cover-colored hue at the top, like YTM (also with OLED: only the rest is black)
-    self.gradient = YTMUGradientLayer(YTMUAverageColor(self.collection.cover));
-    self.gradient.locations = @[@0.0, @0.75];
-    [header.layer insertSublayer:self.gradient atIndex:0];
+    UIImage *backdrop = YTMUBackdropImage(self.collection.cover);
+    self.backdrop = [CALayer layer];
+    self.backdrop.contents = (__bridge id)backdrop.CGImage;
+    self.backdrop.contentsGravity = @"resize";
+    self.backdrop.magnificationFilter = @"linear";
+    // Fades into the page background
+    self.gradient = (CAGradientLayer *)[NSClassFromString(@"CAGradientLayer") layer];
+    self.gradient.colors = @[(id)[UIColor blackColor].CGColor, (id)[UIColor clearColor].CGColor];
+    self.gradient.locations = @[@0.2, @0.7];
+    self.backdrop.mask = self.gradient;
+    [header.layer insertSublayer:self.backdrop atIndex:0];
 
     UIImageView *cover = [[UIImageView alloc] initWithImage:self.collection.cover];
     cover.contentMode = UIViewContentModeScaleAspectFill;
@@ -1185,7 +1212,8 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     if (self.tableView.tableHeaderView != self.headerView || fabs(self.headerView.frame.size.height - size.height) > 0.5 ||
         fabs(self.headerView.frame.size.width - width) > 0.5) {
         self.headerView.frame = CGRectMake(0, 0, width, size.height);
-        self.gradient.frame = self.headerView.bounds;
+        self.backdrop.frame = self.headerView.bounds;
+        self.gradient.frame = self.backdrop.bounds;
         self.tableView.tableHeaderView = self.headerView;
     }
 }
