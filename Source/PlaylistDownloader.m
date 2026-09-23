@@ -558,7 +558,23 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 
 #pragma mark Title fallback from the page
 
-// Page text right before the title: the playlist owner / artist
+// Creator from the page texts: albums show the artist above the title,
+// playlists show the owner below it
+- (BOOL)isCreatorCandidate:(NSString *)label {
+    if (label.length < 2 || label.length > 60 || [label containsString:@"•"])
+        return NO;
+    NSString *lower = label.lowercaseString;
+    for (NSString *prefix in @[@"edit", @"download", @"play", @"shuffle", @"save", @"more", @"share", @"view", @"action", @"add ", @"resume", @"back", @"search"]) {
+        if ([lower hasPrefix:prefix])
+            return NO;
+    }
+    for (NSString *word in @[@"views", @"songs", @"tracks", @"comments", @"hrs", @"mins", @"ago", @"public", @"private", @"unlisted"]) {
+        if ([lower containsString:word])
+            return NO;
+    }
+    return YES;
+}
+
 - (NSString *)pageCreatorFromTexts {
     NSUInteger headingIndex = NSNotFound;
     for (NSUInteger i = 0; i < self.pageTexts.count; i++) {
@@ -569,9 +585,11 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     }
     if (headingIndex == NSNotFound)
         return nil;
-    for (NSUInteger i = 0; i < headingIndex; i++) {
+
+    // Playlists: first real label after the title ("Fr0z3n")
+    for (NSUInteger i = headingIndex + 1; i < self.pageTexts.count; i++) {
         NSString *label = self.pageTexts[i][@"label"];
-        if (label.length && label.length < 60 && ![label containsString:@"•"])
+        if ([self isCreatorCandidate:label])
             return label;
     }
     return nil;
@@ -739,6 +757,18 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
                 self.albumCoverURL = YTMUBigThumbnail(coverURL);
         }
         break;
+    }
+
+    // Newer header layout: creator in a "facepile" (avatar stack) with name + picture
+    id avatarStack = YTMUFindFirst(response, @"avatarStackViewModel");
+    if (avatarStack) {
+        NSString *stackName = YTMUPath(avatarStack, @[@"text", @"content"]);
+        if ([stackName isKindOfClass:[NSString class]] && stackName.length && !self.creatorName.length)
+            self.creatorName = stackName;
+        NSArray *sources = YTMUPath(avatarStack, @[@"avatars", @0, @"avatarViewModel", @"image", @"sources"]);
+        NSString *avatarURL = [sources isKindOfClass:[NSArray class]] ? YTMUPath(sources, @[@-1, @"url"]) : nil;
+        if ([avatarURL isKindOfClass:[NSString class]] && !self.creatorImageURL)
+            self.creatorImageURL = YTMUBigThumbnail(avatarURL);
     }
 
     if (!self.collectionDetails.length) {
