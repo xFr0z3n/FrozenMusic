@@ -479,6 +479,13 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         [self shareItems:@[track.url] from:sender];
     }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Open song" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        // YTMusicUltimate folder in the Files app
+        NSString *path = [[self rootFolder].path stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+        NSURL *filesURL = path ? [NSURL URLWithString:[@"shareddocuments://" stringByAppendingString:path]] : nil;
+        if (filesURL)
+            [[UIApplication sharedApplication] openURL:filesURL options:@{} completionHandler:nil];
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Rename" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         [self renameSong:track];
     }]];
