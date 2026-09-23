@@ -43,11 +43,22 @@ static UIColor *YTMUBackground(void) {
 }
 
 // Real white: "Low contrast" dims [UIColor whiteColor] app-wide, YTM's headers stay white
+// (built from a CGColor: colorWithWhite: goes through the hooked whiteColor too)
 static UIColor *YTMUPureWhite(void) {
-    return [UIColor colorWithWhite:1.0 alpha:1.0];
+    static UIColor *white = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGFloat components[4] = {1.0, 1.0, 1.0, 1.0};
+        CGColorRef color = CGColorCreate(space, components);
+        white = [UIColor colorWithCGColor:color];
+        CGColorRelease(color);
+        CGColorSpaceRelease(space);
+    });
+    return white;
 }
 
-// Top color of the page gradients (none with OLED)
+// Top color of the Now Playing gradient (none with OLED)
 static UIColor *YTMUGradientTop(UIImage *artwork) {
     return YTMUIsOLED() ? [UIColor blackColor] : YTMUAverageColor(artwork);
 }
@@ -192,7 +203,7 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
         [parts addObject:by];
     if (self.year.length)
         [parts addObject:self.year];
-    [parts addObject:[NSString stringWithFormat:@"%lu %@", (unsigned long)self.files.count, self.files.count == 1 ? @"song" : @"songs"]];
+    [parts addObject:[NSString stringWithFormat:@"%lu %@", (unsigned long)self.files.count, self.files.count == 1 ? @"track" : @"tracks"]];
     return [parts componentsJoinedByString:@" • "];
 }
 
@@ -862,6 +873,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 @property (nonatomic, strong) UILabel *detailsLabel;
 - (void)updateMiniPlayerHeight;
 @property (nonatomic, strong) UIButton *moreButton;
+@property (nonatomic, strong) UIStackView *detailsSpacingColumn;
 @property (nonatomic) BOOL detailsExpanded;
 @end
 
@@ -908,9 +920,11 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
         [weakSelf updateMiniPlayerHeight];
     };
 
-    UIButton *backButton = YTMUIconButton(@"chevron.left", 16, [UIColor whiteColor]);
-    backButton.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.35];
-    backButton.layer.cornerRadius = 16;
+    UIButton *backButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *backConfig = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightRegular];
+    [backButton setImage:[UIImage systemImageNamed:@"chevron.left" withConfiguration:backConfig] forState:UIControlStateNormal];
+    backButton.tintColor = [UIColor colorWithWhite:1.0 alpha:0.55];
+    backButton.translatesAutoresizingMaskIntoConstraints = NO;
     [backButton addTarget:self action:@selector(back) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:backButton];
 
@@ -924,10 +938,10 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
         [self.miniPlayer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.miniPlayer.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
 
-        [backButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:12],
-        [backButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:6],
-        [backButton.widthAnchor constraintEqualToConstant:32],
-        [backButton.heightAnchor constraintEqualToConstant:32]
+        [backButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:5],
+        [backButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:0],
+        [backButton.widthAnchor constraintEqualToConstant:36],
+        [backButton.heightAnchor constraintEqualToConstant:36]
     ]];
 
     [self buildHeader];
@@ -975,13 +989,15 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 
 - (void)buildHeader {
     UIView *header = [UIView new];
-    self.gradient = YTMUGradientLayer(YTMUGradientTop(self.collection.cover));
+    // Cover-colored hue at the top, like YTM (also with OLED: only the rest is black)
+    self.gradient = YTMUGradientLayer(YTMUAverageColor(self.collection.cover));
+    self.gradient.locations = @[@0.0, @0.75];
     [header.layer insertSublayer:self.gradient atIndex:0];
 
     UIImageView *cover = [[UIImageView alloc] initWithImage:self.collection.cover];
     cover.contentMode = UIViewContentModeScaleAspectFill;
     cover.clipsToBounds = YES;
-    cover.layer.cornerRadius = 8.0;
+    cover.layer.cornerRadius = 6.0;
     cover.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.06];
     cover.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -994,10 +1010,10 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     UIImageView *creatorImage = [[UIImageView alloc] initWithImage:self.collection.creatorImage];
     creatorImage.contentMode = UIViewContentModeScaleAspectFill;
     creatorImage.clipsToBounds = YES;
-    creatorImage.layer.cornerRadius = 14.0;
+    creatorImage.layer.cornerRadius = 12.0;
     creatorImage.translatesAutoresizingMaskIntoConstraints = NO;
-    [creatorImage.widthAnchor constraintEqualToConstant:28].active = YES;
-    [creatorImage.heightAnchor constraintEqualToConstant:28].active = YES;
+    [creatorImage.widthAnchor constraintEqualToConstant:24].active = YES;
+    [creatorImage.heightAnchor constraintEqualToConstant:24].active = YES;
     creatorImage.hidden = self.collection.creatorImage == nil;
 
     UILabel *creatorLabel = YTMULabel([UIFont systemFontOfSize:15 weight:UIFontWeightMedium], [UIColor whiteColor]);
@@ -1007,22 +1023,23 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     creatorRow.axis = UILayoutConstraintAxisHorizontal;
     creatorRow.spacing = 8;
     creatorRow.alignment = UIStackViewAlignmentCenter;
-    creatorRow.translatesAutoresizingMaskIntoConstraints = NO;
     creatorRow.hidden = self.collection.creator.length == 0;
 
+    // "Playlist • Fr0z3n • 47 tracks" with the .m4a / .mp3 badge right next to it
     UILabel *subtitle = YTMULabel([UIFont systemFontOfSize:15], YTMUSecondaryText());
     subtitle.text = self.collection.subtitle;
     subtitle.textAlignment = NSTextAlignmentCenter;
     subtitle.numberOfLines = 2;
+    [subtitle setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
 
-    UIStackView *badges = [UIStackView new];
-    badges.axis = UILayoutConstraintAxisHorizontal;
-    badges.spacing = 6;
-    badges.translatesAutoresizingMaskIntoConstraints = NO;
+    UIStackView *infoRow = [[UIStackView alloc] initWithArrangedSubviews:@[subtitle]];
+    infoRow.axis = UILayoutConstraintAxisHorizontal;
+    infoRow.spacing = 8;
+    infoRow.alignment = UIStackViewAlignmentCenter;
     for (NSString *format in self.collection.formats)
-        [badges addArrangedSubview:[YTMUBadgeLabel badgeWithText:[@"." stringByAppendingString:format]]];
+        [infoRow addArrangedSubview:[YTMUBadgeLabel badgeWithText:[@"." stringByAppendingString:format]]];
 
-    // Description, 2 lines with "...More"
+    // Description, 2 lines; "...More" only when it doesn't fit
     self.detailsLabel = YTMULabel([UIFont systemFontOfSize:14], YTMUSecondaryText());
     self.detailsLabel.text = [self.collection.details stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     self.detailsLabel.textAlignment = NSTextAlignmentCenter;
@@ -1033,60 +1050,75 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     [self.moreButton setTitle:@"...More" forState:UIControlStateNormal];
     [self.moreButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.moreButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
-    self.moreButton.translatesAutoresizingMaskIntoConstraints = NO;
-    self.moreButton.hidden = self.detailsLabel.hidden;
+    self.moreButton.hidden = YES; // decided in viewDidLayoutSubviews
     [self.moreButton addTarget:self action:@selector(toggleDetails) forControlEvents:UIControlEventTouchUpInside];
 
-    UIButton *shuffle = YTMUCircleButton(@"shuffle", 52, 20, [UIColor colorWithWhite:1.0 alpha:0.12], YTMUPureWhite());
-    UIButton *play = YTMUCircleButton(@"play.fill", 68, 28, YTMUPureWhite(), [UIColor blackColor]);
-    UIButton *menu = YTMUCircleButton(@"ellipsis", 52, 20, [UIColor colorWithWhite:1.0 alpha:0.12], YTMUPureWhite());
+    UIButton *shuffle = YTMUCircleButton(@"shuffle", 48, 19, [UIColor colorWithWhite:1.0 alpha:0.12], YTMUPureWhite());
+    UIButton *play = YTMUCircleButton(@"play.fill", 64, 26, YTMUPureWhite(), [UIColor blackColor]);
+    UIButton *menu = YTMUCircleButton(@"ellipsis", 48, 19, [UIColor colorWithWhite:1.0 alpha:0.12], YTMUPureWhite());
     [shuffle addTarget:self action:@selector(shuffleAll) forControlEvents:UIControlEventTouchUpInside];
     [play addTarget:self action:@selector(playAll) forControlEvents:UIControlEventTouchUpInside];
     [menu addTarget:self action:@selector(showMenu:) forControlEvents:UIControlEventTouchUpInside];
 
     UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[shuffle, play, menu]];
     buttons.axis = UILayoutConstraintAxisHorizontal;
-    buttons.spacing = 28;
+    buttons.spacing = 22;
     buttons.alignment = UIStackViewAlignmentCenter;
-    buttons.translatesAutoresizingMaskIntoConstraints = NO;
 
-    for (UIView *view in @[cover, title, creatorRow, subtitle, badges, self.detailsLabel, self.moreButton, buttons])
-        [header addSubview:view];
+    // Hidden rows (no creator / description / More) collapse with their spacing
+    UIStackView *column = [[UIStackView alloc] initWithArrangedSubviews:@[title, creatorRow, infoRow, self.detailsLabel, self.moreButton, buttons]];
+    column.axis = UILayoutConstraintAxisVertical;
+    column.alignment = UIStackViewAlignmentCenter;
+    column.spacing = 8;
+    [column setCustomSpacing:4 afterView:title];
+    [column setCustomSpacing:6 afterView:creatorRow];
+    [column setCustomSpacing:8 afterView:infoRow];
+    [column setCustomSpacing:0 afterView:self.detailsLabel];
+    [column setCustomSpacing:20 afterView:self.moreButton];
+    column.translatesAutoresizingMaskIntoConstraints = NO;
+    // Space above the buttons when the description is the last text
+    self.detailsSpacingColumn = column;
 
-    CGFloat top = UIApplication.sharedApplication.keyWindow.safeAreaInsets.top + 56;
+    [header addSubview:cover];
+    [header addSubview:column];
+
+    CGFloat top = UIApplication.sharedApplication.keyWindow.safeAreaInsets.top + 48;
     [NSLayoutConstraint activateConstraints:@[
         [cover.topAnchor constraintEqualToAnchor:header.topAnchor constant:top],
         [cover.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
-        [cover.widthAnchor constraintEqualToConstant:240],
-        [cover.heightAnchor constraintEqualToConstant:240],
+        [cover.widthAnchor constraintEqualToConstant:220],
+        [cover.heightAnchor constraintEqualToConstant:220],
 
-        [title.topAnchor constraintEqualToAnchor:cover.bottomAnchor constant:22],
-        [title.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:24],
-        [title.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-24],
+        [column.topAnchor constraintEqualToAnchor:cover.bottomAnchor constant:18],
+        [column.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:24],
+        [column.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-24],
+        [column.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-16],
 
-        [creatorRow.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:10],
-        [creatorRow.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
-
-        [subtitle.topAnchor constraintEqualToAnchor:creatorRow.bottomAnchor constant:10],
-        [subtitle.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:24],
-        [subtitle.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-24],
-
-        [badges.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:8],
-        [badges.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
-
-        [self.detailsLabel.topAnchor constraintEqualToAnchor:badges.bottomAnchor constant:14],
-        [self.detailsLabel.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:24],
-        [self.detailsLabel.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-24],
-
-        [self.moreButton.topAnchor constraintEqualToAnchor:self.detailsLabel.bottomAnchor constant:2],
-        [self.moreButton.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
-
-        [buttons.topAnchor constraintEqualToAnchor:self.moreButton.bottomAnchor constant:18],
-        [buttons.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
-        [buttons.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-20]
+        [title.widthAnchor constraintEqualToAnchor:column.widthAnchor],
+        [self.detailsLabel.widthAnchor constraintEqualToAnchor:column.widthAnchor],
+        [infoRow.widthAnchor constraintLessThanOrEqualToAnchor:column.widthAnchor]
     ]];
 
     self.headerView = header;
+}
+
+// "...More" only for descriptions longer than 2 lines
+- (void)updateMoreButton {
+    NSString *text = self.detailsLabel.text;
+    CGFloat width = self.view.bounds.size.width - 48;
+    BOOL tooLong = NO;
+    if (text.length && width > 0) {
+        UIFont *font = self.detailsLabel.font;
+        CGRect rect = [text boundingRectWithSize:CGSizeMake(width, CGFLOAT_MAX)
+                                         options:NSStringDrawingUsesLineFragmentOrigin
+                                      attributes:@{NSFontAttributeName: font}
+                                         context:nil];
+        tooLong = ceil(rect.size.height) > ceil(font.lineHeight * 2.0) + 1.0;
+    }
+    if (self.moreButton.hidden == tooLong)
+        self.moreButton.hidden = !tooLong;
+    // Without "...More" the buttons need the gap right after the description
+    [self.detailsSpacingColumn setCustomSpacing:tooLong ? 0 : 20 afterView:self.detailsLabel];
 }
 
 - (void)toggleDetails {
@@ -1112,6 +1144,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     CGFloat width = self.view.bounds.size.width;
     if (width <= 0)
         return;
+    [self updateMoreButton];
     CGSize size = [self.headerView systemLayoutSizeFittingSize:CGSizeMake(width, UILayoutFittingCompressedSize.height)
                                  withHorizontalFittingPriority:UILayoutPriorityRequired
                                        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
