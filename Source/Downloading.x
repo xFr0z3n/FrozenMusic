@@ -330,6 +330,63 @@ static NSArray<NSDictionary *> *YTMUHeaderTexts(UIView *view) {
     return texts;
 }
 
+// Picture of a view: UIImageView image or a node's layer contents (YTM draws with Texture)
+static UIImage *YTMUImageOfView(UIView *view) {
+    if ([view isKindOfClass:[UIImageView class]] && ((UIImageView *)view).image)
+        return ((UIImageView *)view).image;
+    id contents = view.layer.contents;
+    if (contents && CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID())
+        return [UIImage imageWithCGImage:(__bridge CGImageRef)contents];
+    return nil;
+}
+
+static void YTMUCollectAvatars(UIView *view, UIView *root, NSMutableArray<NSDictionary *> *output, NSUInteger depth) {
+    if (!view || view.hidden || depth > 40)
+        return;
+    CGSize size = view.bounds.size;
+    BOOL square = fabs(size.width - size.height) <= 3;
+    BOOL small = size.width >= 16 && size.width <= 72;
+    BOOL cover = size.width >= 150;
+    if (square && (small || cover)) {
+        UIImage *image = YTMUImageOfView(view);
+        if (image && image.size.width >= 16) {
+            CGRect frame = [view convertRect:view.bounds toView:root];
+            [output addObject:@{@"image": image, @"y": @(CGRectGetMinY(frame)), @"cover": @(cover)}];
+        }
+    }
+    for (UIView *subview in view.subviews)
+        YTMUCollectAvatars(subview, root, output, depth + 1);
+}
+
+// Album pages show the artist's round picture at the very top of the header
+static UIImage *YTMUHeaderAvatar(UIView *view) {
+    UIViewController *vc = [view respondsToSelector:@selector(_viewControllerForAncestor)] ? view._viewControllerForAncestor : nil;
+    UIViewController *header = nil;
+    for (UIViewController *current = vc; current; current = current.parentViewController) {
+        if ([NSStringFromClass([current class]) containsString:@"Header"])
+            header = current;
+    }
+    UIView *root = header.isViewLoaded ? header.view : view.superview;
+    NSMutableArray<NSDictionary *> *avatars = [NSMutableArray array];
+    YTMUCollectAvatars(root, root, avatars, 0);
+    // Only small pictures above the album cover (icons sit below it)
+    double coverY = -1;
+    for (NSDictionary *avatar in avatars) {
+        if ([avatar[@"cover"] boolValue] && (coverY < 0 || [avatar[@"y"] doubleValue] < coverY))
+            coverY = [avatar[@"y"] doubleValue];
+    }
+    if (coverY < 0)
+        return nil;
+    NSDictionary *top = nil;
+    for (NSDictionary *avatar in avatars) {
+        if ([avatar[@"cover"] boolValue] || [avatar[@"y"] doubleValue] >= coverY)
+            continue;
+        if (!top || [avatar[@"y"] doubleValue] < [top[@"y"] doubleValue])
+            top = avatar;
+    }
+    return top[@"image"];
+}
+
 #pragma mark - Playlist page helpers
 
 // Download badge inside a page header (playlist, album, ...) and not Now Playing
@@ -666,8 +723,10 @@ void YTMUPauseAppPlayer(void) {
         NSString *browseID = YTMUPlaylistBrowseID(tappedView);
         if (browseID.length) {
             YTMUPlaylistDownloader *downloader = [YTMUPlaylistDownloader sharedDownloader];
-            if (!downloader.running)
+            if (!downloader.running) {
                 downloader.pageTexts = YTMUHeaderTexts(tappedView);
+                downloader.pageAvatar = YTMUHeaderAvatar(tappedView);
+            }
             [downloader startWithBrowseID:browseID];
         } else {
             [UIPasteboard generalPasteboard].string = YTMUDebugReport(tappedView);

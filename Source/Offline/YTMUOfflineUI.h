@@ -26,6 +26,8 @@
 #pragma mark - Shared helpers
 
 FOUNDATION_EXPORT UIColor *YTMUAverageColor(UIImage *image);
+FOUNDATION_EXPORT BOOL YTMUIsOLED(void);               // OLED Dark Theme setting on
+FOUNDATION_EXPORT UIColor *YTMUBackgroundColor(void);  // pure black with OLED
 FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 
 @interface YTMUBadgeLabel : UILabel

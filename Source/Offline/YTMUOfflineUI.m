@@ -28,8 +28,28 @@ NSString *YTMUFormatTime(NSTimeInterval seconds) {
     return [NSString stringWithFormat:@"%ld:%02ld", (long)(total / 60), (long)(total % 60)];
 }
 
+// YTMusicUltimate > Themes > OLED Dark Theme
+BOOL YTMUIsOLED(void) {
+    NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"YTMUltimate"];
+    return [prefs[@"YTMUltimateIsEnabled"] boolValue] && [prefs[@"oledTheme"] boolValue];
+}
+
+UIColor *YTMUBackgroundColor(void) {
+    return YTMUIsOLED() ? [UIColor blackColor] : [UIColor colorWithRed:3 / 255.0 green:3 / 255.0 blue:3 / 255.0 alpha:1.0];
+}
+
 static UIColor *YTMUBackground(void) {
-    return [UIColor colorWithRed:3 / 255.0 green:3 / 255.0 blue:3 / 255.0 alpha:1.0];
+    return YTMUBackgroundColor();
+}
+
+// Real white: "Low contrast" dims [UIColor whiteColor] app-wide, YTM's headers stay white
+static UIColor *YTMUPureWhite(void) {
+    return [UIColor colorWithWhite:1.0 alpha:1.0];
+}
+
+// Top color of the page gradients (none with OLED)
+static UIColor *YTMUGradientTop(UIImage *artwork) {
+    return YTMUIsOLED() ? [UIColor blackColor] : YTMUAverageColor(artwork);
 }
 
 static UIColor *YTMUSecondaryText(void) {
@@ -167,8 +187,9 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
 - (NSString *)subtitle {
     NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithObject:self.isAlbum ? @"Album" : @"Playlist"];
-    if (self.artist.length)
-        [parts addObject:self.artist];
+    NSString *by = self.isAlbum ? self.artist : [self.creator stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (by.length)
+        [parts addObject:by];
     if (self.year.length)
         [parts addObject:self.year];
     [parts addObject:[NSString stringWithFormat:@"%lu %@", (unsigned long)self.files.count, self.files.count == 1 ? @"song" : @"songs"]];
@@ -187,6 +208,13 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         YTMUShare(collection.files, presenter, source);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Open folder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        // Files app, right inside this playlist's folder
+        NSString *path = [collection.folder.path stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+        NSURL *filesURL = [NSURL URLWithString:[@"shareddocuments://" stringByAppendingString:path ?: @""]];
+        if (filesURL)
+            [[UIApplication sharedApplication] openURL:filesURL options:@{} completionHandler:nil];
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:collection.name
@@ -503,7 +531,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     if (!self)
         return nil;
 
-    self.backgroundColor = [UIColor colorWithWhite:0.11 alpha:1.0];
+    self.backgroundColor = YTMUIsOLED() ? [UIColor blackColor] : [UIColor colorWithWhite:0.11 alpha:1.0];
 
     self.progress = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar];
     self.progress.progressTintColor = [UIColor whiteColor];
@@ -640,7 +668,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     [super viewDidLoad];
     self.view.backgroundColor = YTMUBackground();
 
-    self.gradient = YTMUGradientLayer([UIColor colorWithWhite:0.18 alpha:1.0]);
+    self.gradient = YTMUGradientLayer(YTMUIsOLED() ? [UIColor blackColor] : [UIColor colorWithWhite:0.18 alpha:1.0]);
     [self.view.layer insertSublayer:self.gradient atIndex:0];
 
     UIButton *closeButton = YTMUIconButton(@"chevron.down", 22, [UIColor whiteColor]);
@@ -755,7 +783,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     self.artworkView.image = track.artwork;
     self.titleLabel.text = track.title;
     self.artistLabel.text = track.artist;
-    self.gradient.colors = @[(id)YTMUAverageColor(track.artwork).CGColor, (id)YTMUBackground().CGColor];
+    self.gradient.colors = @[(id)YTMUGradientTop(track.artwork).CGColor, (id)YTMUBackground().CGColor];
 
     UIImageSymbolConfiguration *playConfig = [UIImageSymbolConfiguration configurationWithPointSize:32 weight:UIImageSymbolWeightSemibold];
     [self.playButton setImage:[UIImage systemImageNamed:player.isPlaying ? @"pause.fill" : @"play.fill" withConfiguration:playConfig] forState:UIControlStateNormal];
@@ -947,7 +975,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 
 - (void)buildHeader {
     UIView *header = [UIView new];
-    self.gradient = YTMUGradientLayer(YTMUAverageColor(self.collection.cover));
+    self.gradient = YTMUGradientLayer(YTMUGradientTop(self.collection.cover));
     [header.layer insertSublayer:self.gradient atIndex:0];
 
     UIImageView *cover = [[UIImageView alloc] initWithImage:self.collection.cover];
@@ -957,7 +985,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     cover.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.06];
     cover.translatesAutoresizingMaskIntoConstraints = NO;
 
-    UILabel *title = YTMULabel([UIFont systemFontOfSize:28 weight:UIFontWeightBold], [UIColor whiteColor]);
+    UILabel *title = YTMULabel([UIFont systemFontOfSize:28 weight:UIFontWeightBold], YTMUPureWhite());
     title.text = self.collection.name;
     title.textAlignment = NSTextAlignmentCenter;
     title.numberOfLines = 3;
@@ -1009,9 +1037,9 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     self.moreButton.hidden = self.detailsLabel.hidden;
     [self.moreButton addTarget:self action:@selector(toggleDetails) forControlEvents:UIControlEventTouchUpInside];
 
-    UIButton *shuffle = YTMUCircleButton(@"shuffle", 52, 20, [UIColor colorWithWhite:1.0 alpha:0.12], [UIColor whiteColor]);
-    UIButton *play = YTMUCircleButton(@"play.fill", 68, 28, [UIColor whiteColor], [UIColor blackColor]);
-    UIButton *menu = YTMUCircleButton(@"ellipsis", 52, 20, [UIColor colorWithWhite:1.0 alpha:0.12], [UIColor whiteColor]);
+    UIButton *shuffle = YTMUCircleButton(@"shuffle", 52, 20, [UIColor colorWithWhite:1.0 alpha:0.12], YTMUPureWhite());
+    UIButton *play = YTMUCircleButton(@"play.fill", 68, 28, YTMUPureWhite(), [UIColor blackColor]);
+    UIButton *menu = YTMUCircleButton(@"ellipsis", 52, 20, [UIColor colorWithWhite:1.0 alpha:0.12], YTMUPureWhite());
     [shuffle addTarget:self action:@selector(shuffleAll) forControlEvents:UIControlEventTouchUpInside];
     [play addTarget:self action:@selector(playAll) forControlEvents:UIControlEventTouchUpInside];
     [menu addTarget:self action:@selector(showMenu:) forControlEvents:UIControlEventTouchUpInside];
