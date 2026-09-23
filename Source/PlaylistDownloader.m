@@ -362,6 +362,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 // Filled while loading: album pages get real album tags, playlists use the playlist name
 @property (nonatomic) BOOL isAlbum;
 @property (nonatomic, copy) NSString *albumArtist;
+@property (nonatomic, copy) NSString *artistChannelID; // albums: first song's artist (UC...), for creator.png
 @property (nonatomic, copy) NSString *albumYear;
 @property (nonatomic, copy) NSString *albumCoverURL;
 
@@ -545,6 +546,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     self.collectionDetails = nil;
     self.creatorName = nil;
     self.creatorImageURL = nil;
+    self.artistChannelID = nil;
 
     // Device info is read here on the main thread
     struct utsname systemInfo;
@@ -712,6 +714,24 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 
 #pragma mark Playlist fetching (InnerTube web API)
 
+// Artist page picture (round avatar if there is one, else the header image)
+- (NSString *)artistImageURLForChannel:(NSString *)channelID {
+    NSString *baseURL = @"https://music.youtube.com/youtubei/v1/browse?prettyPrint=false";
+    NSDictionary *response = YTMUPostJSON(baseURL, @{@"context": [self webContext], @"browseId": channelID}, [self webHeaders]);
+    if (!response)
+        return nil;
+    for (NSString *key in @[@"foregroundThumbnail", @"thumbnail"]) {
+        for (NSString *headerKey in @[@"musicVisualHeaderRenderer", @"musicImmersiveHeaderRenderer", @"musicResponsiveHeaderRenderer"]) {
+            id header = YTMUFindFirst(response, headerKey);
+            NSArray *thumbs = YTMUFindFirst(YTMUFindFirst(header, key), @"thumbnails");
+            NSString *url = [thumbs isKindOfClass:[NSArray class]] ? YTMUPath(thumbs, @[@-1, @"url"]) : nil;
+            if ([url isKindOfClass:[NSString class]] && url.length)
+                return YTMUBigThumbnail(url);
+        }
+    }
+    return nil;
+}
+
 - (NSDictionary *)webContext {
     return @{@"client": @{@"clientName": @"WEB_REMIX", @"clientVersion": @"1.20250310.01.00", @"hl": @"en", @"gl": @"US"}};
 }
@@ -865,6 +885,11 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
             track.title = YTMUText(YTMUPath(columns, @[@0, @"musicResponsiveListItemFlexColumnRenderer", @"text"])) ?: @"Unknown";
             track.artist = YTMUText(YTMUPath(columns, @[@1, @"musicResponsiveListItemFlexColumnRenderer", @"text"]));
             track.album = YTMUText(YTMUPath(columns, @[@2, @"musicResponsiveListItemFlexColumnRenderer", @"text"]));
+            if (!self.artistChannelID) {
+                NSString *channel = YTMUPath(columns, @[@1, @"musicResponsiveListItemFlexColumnRenderer", @"text", @"runs", @0, @"navigationEndpoint", @"browseEndpoint", @"browseId"]);
+                if ([channel isKindOfClass:[NSString class]] && [channel hasPrefix:@"UC"])
+                    self.artistChannelID = channel;
+            }
             NSString *thumb = YTMUPath(item, @[@"thumbnail", @"musicThumbnailRenderer", @"thumbnail", @"thumbnails", @-1, @"url"]);
             track.thumbnailURL = [thumb isKindOfClass:[NSString class]] ? YTMUBigThumbnail(thumb) : nil;
             [tracks addObject:track];
@@ -1455,10 +1480,15 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     NSString *coverURL = self.collectionCoverURL ?: self.albumCoverURL ?: self.firstTrackCoverURL;
     NSString *creatorURL = self.creatorImageURL;
     UIImage *pageAvatar = self.isAlbum ? self.pageAvatar : nil;
+    NSString *artistChannel = self.isAlbum ? self.artistChannelID : nil;
     NSString *creator = self.creatorName;
     NSString *details = self.collectionDetails;
     NSURL *folder = self.folder;
     dispatch_async(self.workQueue, ^{
+        NSString *creatorImageURL = creatorURL;
+        // Albums without a picture on the page: the artist's own page has one
+        if (folder && !creatorImageURL && !pageAvatar && artistChannel)
+            creatorImageURL = [self artistImageURLForChannel:artistChannel];
         if (folder && self.downloadedCount + self.skippedCount > 0) {
             if (coverURL) {
                 UIImage *cover = [UIImage imageWithData:YTMUGet(coverURL)];
@@ -1466,12 +1496,12 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
                 [png writeToURL:[folder URLByAppendingPathComponent:@"cover.png"] atomically:YES];
             }
             // Albums: the artist picture from the page (web data has none for album-playlists)
-            if (pageAvatar && !creatorURL) {
+            if (pageAvatar && !creatorImageURL) {
                 NSData *png = UIImagePNGRepresentation(pageAvatar);
                 [png writeToURL:[folder URLByAppendingPathComponent:@"creator.png"] atomically:YES];
             }
-            if (creatorURL) {
-                UIImage *image = [UIImage imageWithData:YTMUGet(creatorURL)];
+            if (creatorImageURL) {
+                UIImage *image = [UIImage imageWithData:YTMUGet(creatorImageURL)];
                 NSData *png = image ? UIImagePNGRepresentation(image) : nil;
                 [png writeToURL:[folder URLByAppendingPathComponent:@"creator.png"] atomically:YES];
             }

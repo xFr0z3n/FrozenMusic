@@ -437,6 +437,10 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
         YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
         BOOL isCurrent = [player.currentTrack.url isEqual:track.url];
         [cell configureWithTrack:track isCurrent:isCurrent isPlaying:player.isPlaying];
+        __weak __typeof(self) weakSelf = self;
+        cell.onMenu = ^(UIButton *sender) {
+            [weakSelf showMenuForSong:track from:sender];
+        };
         return cell;
     }
 
@@ -467,38 +471,24 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     }
 }
 
-#pragma mark Swipe actions
+#pragma mark Song menu
 
-- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == YTMUSectionSongs) {
-        YTMUOfflineTrack *track = self.songs[(NSUInteger)indexPath.row];
-        NSURL *pngURL = [[track.url URLByDeletingPathExtension] URLByAppendingPathExtension:@"png"];
-
-        UIContextualAction *share = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:nil handler:^(UIContextualAction *action, UIView *sourceView, void (^completion)(BOOL)) {
-            [self shareItems:@[track.url] from:sourceView];
-            completion(YES);
-        }];
-        share.image = [UIImage systemImageNamed:@"square.and.arrow.up"];
-        share.backgroundColor = [UIColor systemBlueColor];
-
-        UIContextualAction *rename = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:nil handler:^(UIContextualAction *action, UIView *sourceView, void (^completion)(BOOL)) {
-            [self renameSong:track];
-            completion(YES);
-        }];
-        rename.image = [UIImage systemImageNamed:@"pencil"];
-        rename.backgroundColor = [UIColor systemOrangeColor];
-
-        UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:nil handler:^(UIContextualAction *action, UIView *sourceView, void (^completion)(BOOL)) {
-            [self confirmDeleteURL:track.url name:track.url.lastPathComponent.stringByDeletingPathExtension extraURL:pngURL];
-            completion(YES);
-        }];
-        delete.image = [UIImage systemImageNamed:@"trash"];
-
-        UISwipeActionsConfiguration *configuration = [UISwipeActionsConfiguration configurationWithActions:@[delete, rename, share]];
-        configuration.performsFirstActionWithFullSwipe = YES;
-        return configuration;
-    }
-    return nil;
+- (void)showMenuForSong:(YTMUOfflineTrack *)track from:(UIButton *)sender {
+    NSURL *pngURL = [[track.url URLByDeletingPathExtension] URLByAppendingPathExtension:@"png"];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:track.title message:track.artist preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [self shareItems:@[track.url] from:sender];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Rename" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [self renameSong:track];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [self confirmDeleteURL:track.url name:track.url.lastPathComponent.stringByDeletingPathExtension extraURL:pngURL];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sender;
+    sheet.popoverPresentationController.sourceRect = sender.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 #pragma mark Actions
