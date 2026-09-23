@@ -3,6 +3,38 @@
 #import "MP3Encoder.h"
 #import "Headers/YTPlayerViewController.h"
 #import <sys/utsname.h>
+#import <objc/message.h>
+
+#pragma mark - YTM's Next button
+
+static UIViewController *YTMUFindNowPlayingScreen(UIViewController *vc, Class nowPlayingClass, NSUInteger depth) {
+    if (!vc || depth > 14)
+        return nil;
+    if ([vc isKindOfClass:nowPlayingClass])
+        return vc;
+    for (UIViewController *child in vc.childViewControllers) {
+        UIViewController *found = YTMUFindNowPlayingScreen(child, nowPlayingClass, depth + 1);
+        if (found)
+            return found;
+    }
+    return YTMUFindNowPlayingScreen(vc.presentedViewController, nowPlayingClass, depth + 1);
+}
+
+// Same as tapping Next in YTM's player (the Now Playing screen exists even when collapsed)
+static BOOL YTMUTapAppNextButton(void) {
+    Class nowPlayingClass = NSClassFromString(@"YTMNowPlayingViewController");
+    SEL nextSelector = NSSelectorFromString(@"didTapNextButton");
+    if (!nowPlayingClass)
+        return NO;
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        UIViewController *nowPlaying = YTMUFindNowPlayingScreen(window.rootViewController, nowPlayingClass, 0);
+        if (nowPlaying && [nowPlaying respondsToSelector:nextSelector]) {
+            ((void (*)(id, SEL))objc_msgSend)(nowPlaying, nextSelector);
+            return YES;
+        }
+    }
+    return NO;
+}
 
 #pragma mark - Track model
 
@@ -359,6 +391,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 @property (nonatomic, weak) id lastPlayer;
 @property (nonatomic) NSTimeInterval lastActivity;
 @property (nonatomic, strong) NSTimer *watchdog;
+@property (nonatomic) NSUInteger activationCount; // song changes seen (Next-button fallback)
 @property (nonatomic, copy) NSString *collectionCoverURL; // playlist / album cover for cover.png
 @property (nonatomic, copy) NSString *firstTrackCoverURL; // album fallback
 @property (nonatomic, copy) NSString *collectionDetails;  // page description
@@ -1163,6 +1196,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
             return;
         self.lastPlayer = player;
         self.lastActivity = [NSDate timeIntervalSinceReferenceDate];
+        self.activationCount++;
         if (!self.sawActivation) {
             self.sawActivation = YES;
             [self updateStatus];
@@ -1336,8 +1370,28 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     [self updateStatus];
 }
 
-// Jumps to the song's last second so the player moves on to the next one
+// Moves the player on to the next song: YTM's own Next button first (instant, no
+// stall), the old "seek to the last second" only if that didn't change the song
 - (void)skipAheadInPlayer:(id)player attempt:(NSInteger)attempt {
+    if (!self.capturing || ![player isKindOfClass:NSClassFromString(@"YTPlayerViewController")])
+        return;
+
+    NSString *before = [self videoIDOfPlayer:player];
+    NSUInteger activations = self.activationCount;
+    if (before && YTMUTapAppNextButton()) {
+        self.lastActivity = [NSDate timeIntervalSinceReferenceDate];
+        // Nothing happened (no Now Playing screen yet?): fall back to seeking
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (self.capturing && self.activationCount == activations && [[self videoIDOfPlayer:player] isEqualToString:before])
+                [self seekToEndInPlayer:player attempt:0];
+        });
+        return;
+    }
+    [self seekToEndInPlayer:player attempt:attempt];
+}
+
+// Jumps to the song's last second so the player moves on to the next one
+- (void)seekToEndInPlayer:(id)player attempt:(NSInteger)attempt {
     if (!self.capturing || ![player isKindOfClass:NSClassFromString(@"YTPlayerViewController")])
         return;
 
@@ -1348,7 +1402,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
         [playerVC seekToTime:duration - 1.0];
     } else if (attempt < 10) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self skipAheadInPlayer:player attempt:attempt + 1];
+            [self seekToEndInPlayer:player attempt:attempt + 1];
         });
     }
 }

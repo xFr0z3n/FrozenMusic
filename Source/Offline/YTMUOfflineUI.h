@@ -44,6 +44,7 @@ FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 @end
 
 @interface YTMUCollectionCell : UITableViewCell
+@property (nonatomic, copy) void (^onMenu)(UIButton *sender); // ⋮ tapped
 - (void)configureWithCollection:(YTMUCollection *)collection;
 @end
 
@@ -62,5 +63,9 @@ FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 // Small bar with the current song, tap opens Now Playing
 @interface YTMUMiniPlayerView : UIView
 @property (nonatomic, weak) UIViewController *presenter;
-@property (nonatomic, copy) void (^onVisibilityChange)(BOOL visible);
+@property (nonatomic, copy) void (^onVisibilityChange)(BOOL visible); // also called right when set
+- (void)refresh;
 @end
+
+// Share / Delete download sheet for a downloaded playlist or album
+FOUNDATION_EXPORT void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void));

@@ -13,7 +13,54 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
 @property (nonatomic, strong) NSArray<YTMUOfflineTrack *> *songs;
 @property (nonatomic, strong) UIStackView *emptyView;
 @property (nonatomic) BOOL loading;
+@property (nonatomic, strong) YTMUMiniPlayerView *miniPlayer;
+@property (nonatomic, strong) NSLayoutConstraint *miniPlayerBottom;
+@property (nonatomic, strong) NSMapTable<UIView *, NSArray<NSNumber *> *> *hiddenAppPlayerViews; // view -> old alpha, hidden, interaction
+@property (nonatomic, strong) NSTimer *appPlayerTimer;
+@property (nonatomic) BOOL keepAppPlayer;
+@property (nonatomic, weak) UIView *cachedPivotBar;
 @end
+
+#pragma mark - YTM's player while the Downloads tab is open
+
+static UIView *YTMUFindView(UIView *view, Class cls, NSUInteger depth) {
+    if (!view || !cls || depth > 20)
+        return nil;
+    if ([view isKindOfClass:cls])
+        return view;
+    for (UIView *subview in view.subviews) {
+        UIView *found = YTMUFindView(subview, cls, depth + 1);
+        if (found)
+            return found;
+    }
+    return nil;
+}
+
+// Biggest view controller around YTM's player (watch screen + mini player)
+// whose view contains neither the Downloads tab nor the tab bar
+static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep, NSMutableArray<UIViewController *> *output, NSUInteger depth) {
+    if (!vc || depth > 14)
+        return;
+    Class watchClass = NSClassFromString(@"YTMWatchViewController");
+    if (watchClass && [vc isKindOfClass:watchClass]) {
+        UIViewController *outer = vc;
+        while (outer.parentViewController.isViewLoaded) {
+            UIView *parentView = outer.parentViewController.view;
+            BOOL containsKept = NO;
+            for (UIView *view in keep)
+                containsKept = containsKept || [view isDescendantOfView:parentView];
+            if (containsKept)
+                break;
+            outer = outer.parentViewController;
+        }
+        if (![output containsObject:outer])
+            [output addObject:outer];
+        return;
+    }
+    for (UIViewController *child in vc.childViewControllers)
+        YTMUCollectAppPlayers(child, keep, output, depth + 1);
+    YTMUCollectAppPlayers(vc.presentedViewController, keep, output, depth + 1);
+}
 
 @implementation YTMDownloads
 
@@ -35,7 +82,7 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
     self.tableView.backgroundColor = [UIColor clearColor];
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 72;
+    self.tableView.estimatedRowHeight = 64;
     self.tableView.sectionHeaderHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedSectionHeaderHeight = 44;
     if (@available(iOS 15.0, *))
@@ -56,19 +103,166 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
 
     [self buildEmptyView];
 
+    // Offline mini player above YTM's tab bar (YTM's own player is hidden on this tab)
+    self.miniPlayer = [YTMUMiniPlayerView new];
+    self.miniPlayer.presenter = self;
+    self.miniPlayer.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.miniPlayer];
+    self.miniPlayerBottom = [self.miniPlayer.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor];
+    [NSLayoutConstraint activateConstraints:@[
+        self.miniPlayerBottom,
+        [self.miniPlayer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.miniPlayer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.miniPlayer.heightAnchor constraintEqualToConstant:64]
+    ]];
+    self.hiddenAppPlayerViews = [NSMapTable weakToStrongObjectsMapTable];
+
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
     [center addObserver:self selector:@selector(reloadData) name:@"ReloadDataNotification" object:nil];
     [center addObserver:self selector:@selector(playerChanged) name:YTMUOfflinePlayerDidChangeNotification object:nil];
+    // A song started in YTM (other tab, lock screen...): give its player back
+    [center addObserver:self selector:@selector(appPlayerDidActivate) name:@"YTMUPlayerDidActivateVideo" object:nil];
     [self reloadData];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self reloadData]; // playlist downloads may have finished meanwhile
+    [self.miniPlayer refresh];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    self.keepAppPlayer = NO;
+    [self hideAppPlayer];
+    [self layoutMiniPlayer];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self showAppPlayer];
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    [self showAppPlayer];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self layoutMiniPlayer];
+    // Back on this tab without viewDidAppear (YTM's tab switch)
+    if (!self.appPlayerTimer) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!self.appPlayerTimer)
+                [self hideAppPlayer];
+        });
+    }
 }
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self showAppPlayer];
+}
+
+#pragma mark YTM's player
+
+- (BOOL)ytmu_isOnScreen {
+    UIWindow *window = self.view.window;
+    if (!window)
+        return NO;
+    for (UIView *view = self.view; view; view = view.superview) {
+        if (view.hidden || view.alpha < 0.01)
+            return NO;
+    }
+    if (!CGRectIntersectsRect([self.view convertRect:self.view.bounds toView:nil], window.bounds))
+        return NO;
+    // Another tab's page could sit on top of this one
+    CGPoint center = [self.view convertPoint:CGPointMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds)) toView:nil];
+    UIView *hit = [window hitTest:center withEvent:nil];
+    return hit && [hit isDescendantOfView:self.view];
+}
+
+- (void)hideAppPlayer {
+    if (self.keepAppPlayer || ![self ytmu_isOnScreen])
+        return;
+    NSMutableArray<UIView *> *keep = [NSMutableArray arrayWithObject:self.view];
+    UIView *pivotBar = [self ytmu_pivotBar];
+    if (pivotBar)
+        [keep addObject:pivotBar];
+    NSMutableArray<UIViewController *> *players = [NSMutableArray array];
+    YTMUCollectAppPlayers(self.view.window.rootViewController, keep, players, 0);
+    for (UIViewController *player in players) {
+        UIView *view = player.isViewLoaded ? player.view : nil;
+        BOOL containsKept = NO;
+        for (UIView *kept in keep)
+            containsKept = containsKept || [kept isDescendantOfView:view];
+        if (!view || containsKept)
+            continue;
+        if (![self.hiddenAppPlayerViews objectForKey:view])
+            [self.hiddenAppPlayerViews setObject:@[@(view.alpha), @(view.hidden), @(view.userInteractionEnabled)] forKey:view];
+        view.alpha = 0.0;
+        view.hidden = YES;
+        view.userInteractionEnabled = NO;
+    }
+
+    // Tab switches don't always tell child view controllers: keep checking
+    if (!self.appPlayerTimer) {
+        __weak __typeof(self) weakSelf = self;
+        self.appPlayerTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
+            if (!weakSelf || ![weakSelf ytmu_isOnScreen]) {
+                [weakSelf showAppPlayer];
+                return;
+            }
+            [weakSelf hideAppPlayer]; // YTM may have shown it again
+        }];
+    }
+}
+
+- (void)showAppPlayer {
+    [self.appPlayerTimer invalidate];
+    self.appPlayerTimer = nil;
+    for (UIView *view in self.hiddenAppPlayerViews.keyEnumerator.allObjects) {
+        NSArray<NSNumber *> *old = [self.hiddenAppPlayerViews objectForKey:view];
+        view.alpha = old[0].doubleValue;
+        view.hidden = old[1].boolValue;
+        view.userInteractionEnabled = old[2].boolValue;
+    }
+    [self.hiddenAppPlayerViews removeAllObjects];
+}
+
+- (void)appPlayerDidActivate {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!self.appPlayerTimer)
+            return;
+        // Started from the lock screen while on this tab: leave YTM's player until the tab is reopened
+        self.keepAppPlayer = YES;
+        [self showAppPlayer];
+    });
+}
+
+// Sits right on top of YTM's tab bar
+- (void)layoutMiniPlayer {
+    CGFloat inset = self.view.safeAreaInsets.bottom;
+    UIView *pivotBar = [self ytmu_pivotBar];
+    if (pivotBar && !pivotBar.hidden) {
+        CGRect frame = [pivotBar convertRect:pivotBar.bounds toView:self.view];
+        CGFloat fromBottom = self.view.bounds.size.height - CGRectGetMinY(frame);
+        if (fromBottom > 0 && fromBottom < self.view.bounds.size.height / 2)
+            inset = fromBottom;
+    }
+    if (fabs(self.miniPlayerBottom.constant + inset) > 0.5)
+        self.miniPlayerBottom.constant = -inset;
+}
+
+// YTM's tab bar (cached, it lives as long as the app)
+- (UIView *)ytmu_pivotBar {
+    UIView *cached = self.cachedPivotBar;
+    if (cached.window)
+        return cached;
+    cached = YTMUFindView(self.view.window, NSClassFromString(@"YTPivotBarView"), 0);
+    self.cachedPivotBar = cached;
+    return cached;
 }
 
 - (void)buildEmptyView {
@@ -204,7 +398,14 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
 
     if (indexPath.section == YTMUSectionCollections) {
         YTMUCollectionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"collection" forIndexPath:indexPath];
-        [cell configureWithCollection:self.collections[(NSUInteger)indexPath.row]];
+        YTMUCollection *collection = self.collections[(NSUInteger)indexPath.row];
+        [cell configureWithCollection:collection];
+        __weak __typeof(self) weakSelf = self;
+        cell.onMenu = ^(UIButton *sender) {
+            YTMUShowCollectionMenu(collection, weakSelf, sender, ^{
+                [weakSelf reloadData];
+            });
+        };
         return cell;
     }
 

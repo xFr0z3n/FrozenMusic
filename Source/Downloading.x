@@ -596,6 +596,14 @@ static NSString *YTMUBestThumbnailURL(id videoDetails) {
 
 %hook MPNowPlayingInfoCenter
 - (void)setNowPlayingInfo:(NSDictionary *)info {
+    // Offline player's own info: show it, but don't cache it as YTM's
+    if (YTMUOfflinePlayerIsWritingNowPlaying()) {
+        %orig;
+        return;
+    }
+    // Offline music is on: YTM (paused) must not take the lock screen back
+    if ([info isKindOfClass:[NSDictionary class]] && YTMUOfflinePlayerShouldBlockAppNowPlaying(info))
+        return;
     %orig;
     if ([info isKindOfClass:[NSDictionary class]] && info.count) {
         @synchronized ([NSNull class]) {
