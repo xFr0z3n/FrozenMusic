@@ -18,5 +18,7 @@ FOUNDATION_EXPORT NSDictionary *YTMUCurrentNowPlayingInfo(void);
 @property (nonatomic, readonly) BOOL running;
 // Texts shown on the page (from accessibility), set right before start: fallback for the title
 @property (nonatomic, copy) NSArray<NSDictionary *> *pageTexts;
+// Round picture at the top of the page header (album artist), set right before start
+@property (nonatomic, strong) UIImage *pageAvatar;
 - (void)startWithBrowseID:(NSString *)browseID; // "VLPL..." from the playlist page
 @end

@@ -1454,6 +1454,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     // Let the renumber pass finish (and save cover.png) before summing up
     NSString *coverURL = self.collectionCoverURL ?: self.albumCoverURL ?: self.firstTrackCoverURL;
     NSString *creatorURL = self.creatorImageURL;
+    UIImage *pageAvatar = self.isAlbum ? self.pageAvatar : nil;
     NSString *creator = self.creatorName;
     NSString *details = self.collectionDetails;
     NSURL *folder = self.folder;
@@ -1463,6 +1464,11 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
                 UIImage *cover = [UIImage imageWithData:YTMUGet(coverURL)];
                 NSData *png = cover ? UIImagePNGRepresentation(cover) : nil;
                 [png writeToURL:[folder URLByAppendingPathComponent:@"cover.png"] atomically:YES];
+            }
+            // Albums: the artist picture from the page (web data has none for album-playlists)
+            if (pageAvatar && !creatorURL) {
+                NSData *png = UIImagePNGRepresentation(pageAvatar);
+                [png writeToURL:[folder URLByAppendingPathComponent:@"creator.png"] atomically:YES];
             }
             if (creatorURL) {
                 UIImage *image = [UIImage imageWithData:YTMUGet(creatorURL)];

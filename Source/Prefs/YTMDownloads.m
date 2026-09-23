@@ -18,6 +18,7 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
 @property (nonatomic, strong) NSMapTable<UIView *, NSArray<NSNumber *> *> *hiddenAppPlayerViews; // view -> old alpha, hidden, interaction
 @property (nonatomic, strong) NSTimer *appPlayerTimer;
 @property (nonatomic) BOOL keepAppPlayer;
+@property (nonatomic) NSUInteger syncTicks;
 @property (nonatomic, weak) UIView *cachedPivotBar;
 @end
 
@@ -73,7 +74,7 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     [super viewDidLoad];
     self.collections = @[];
     self.songs = @[];
-    self.view.backgroundColor = [UIColor colorWithRed:3 / 255.0 green:3 / 255.0 blue:3 / 255.0 alpha:1.0];
+    self.view.backgroundColor = YTMUBackgroundColor();
 
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
     self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -117,6 +118,14 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     ]];
     self.hiddenAppPlayerViews = [NSMapTable weakToStrongObjectsMapTable];
 
+    // Tab switches don't always tell child view controllers: keep checking
+    __weak __typeof(self) weakSelf = self;
+    self.appPlayerTimer = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
+        [weakSelf syncAppPlayer];
+    }];
+    // Also while scrolling / during transitions
+    [[NSRunLoop mainRunLoop] addTimer:self.appPlayerTimer forMode:NSRunLoopCommonModes];
+
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
     [center addObserver:self selector:@selector(reloadData) name:@"ReloadDataNotification" object:nil];
     [center addObserver:self selector:@selector(playerChanged) name:YTMUOfflinePlayerDidChangeNotification object:nil];
@@ -129,39 +138,34 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     [super viewWillAppear:animated];
     [self reloadData]; // playlist downloads may have finished meanwhile
     [self.miniPlayer refresh];
+    // Hide before anything is drawn (coming back from a playlist or another tab)
+    if (!self.keepAppPlayer)
+        [self hideAppPlayerForced:YES];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     self.keepAppPlayer = NO;
-    [self hideAppPlayer];
+    [self syncAppPlayer];
     [self layoutMiniPlayer];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    [self showAppPlayer];
-}
-
-- (void)viewDidDisappear:(BOOL)animated {
-    [super viewDidDisappear:animated];
-    [self showAppPlayer];
+    // Our own playlist page / Now Playing slides over: keep YTM's player hidden
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self syncAppPlayer];
+    });
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     [self layoutMiniPlayer];
-    // Back on this tab without viewDidAppear (YTM's tab switch)
-    if (!self.appPlayerTimer) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (!self.appPlayerTimer)
-                [self hideAppPlayer];
-        });
-    }
 }
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self.appPlayerTimer invalidate];
     [self showAppPlayer];
 }
 
@@ -183,15 +187,47 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     return hit && [hit isDescendantOfView:self.view];
 }
 
-- (void)hideAppPlayer {
-    if (self.keepAppPlayer || ![self ytmu_isOnScreen])
+// Something we opened from this tab is on top (playlist page, Now Playing, menus)
+- (BOOL)ytmu_ownScreenOnTop {
+    UIWindow *window = self.view.window ?: [UIApplication sharedApplication].keyWindow;
+    for (UIViewController *vc = window.rootViewController.presentedViewController; vc; vc = vc.presentedViewController) {
+        if ([vc isKindOfClass:[YTMUCollectionViewController class]] || [vc isKindOfClass:[YTMUNowPlayingViewController class]])
+            return YES;
+        // Menus / share sheets opened while YTM's player was already hidden here
+        if (self.hiddenAppPlayerViews.count && ([vc isKindOfClass:[UIAlertController class]] || [vc isKindOfClass:[UIActivityViewController class]]))
+            return YES;
+    }
+    return NO;
+}
+
+// Runs every 0.25 s while this tab exists: YTM's player hidden exactly while we're visible
+- (void)syncAppPlayer {
+    if (!self.keepAppPlayer && ([self ytmu_isOnScreen] || (self.hiddenAppPlayerViews.count && [self ytmu_ownScreenOnTop])))
+        [self hideAppPlayerForced:NO];
+    else
+        [self showAppPlayer];
+}
+
+- (void)hideAppPlayerForced:(BOOL)forced {
+    UIWindow *window = self.view.window ?: [UIApplication sharedApplication].keyWindow;
+    if (!window)
         return;
+
+    // Already hidden: just make sure YTM didn't show it again
+    if (self.hiddenAppPlayerViews.count && !forced && ++self.syncTicks % 4 != 0) {
+        for (UIView *view in self.hiddenAppPlayerViews.keyEnumerator.allObjects) {
+            view.alpha = 0.0;
+            view.hidden = YES;
+        }
+        return;
+    }
+
     NSMutableArray<UIView *> *keep = [NSMutableArray arrayWithObject:self.view];
     UIView *pivotBar = [self ytmu_pivotBar];
     if (pivotBar)
         [keep addObject:pivotBar];
     NSMutableArray<UIViewController *> *players = [NSMutableArray array];
-    YTMUCollectAppPlayers(self.view.window.rootViewController, keep, players, 0);
+    YTMUCollectAppPlayers(window.rootViewController, keep, players, 0);
     for (UIViewController *player in players) {
         UIView *view = player.isViewLoaded ? player.view : nil;
         BOOL containsKept = NO;
@@ -205,23 +241,9 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
         view.hidden = YES;
         view.userInteractionEnabled = NO;
     }
-
-    // Tab switches don't always tell child view controllers: keep checking
-    if (!self.appPlayerTimer) {
-        __weak __typeof(self) weakSelf = self;
-        self.appPlayerTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
-            if (!weakSelf || ![weakSelf ytmu_isOnScreen]) {
-                [weakSelf showAppPlayer];
-                return;
-            }
-            [weakSelf hideAppPlayer]; // YTM may have shown it again
-        }];
-    }
 }
 
 - (void)showAppPlayer {
-    [self.appPlayerTimer invalidate];
-    self.appPlayerTimer = nil;
     for (UIView *view in self.hiddenAppPlayerViews.keyEnumerator.allObjects) {
         NSArray<NSNumber *> *old = [self.hiddenAppPlayerViews objectForKey:view];
         view.alpha = old[0].doubleValue;
@@ -233,7 +255,7 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 - (void)appPlayerDidActivate {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!self.appPlayerTimer)
+        if (!self.hiddenAppPlayerViews.count)
             return;
         // Started from the lock screen while on this tab: leave YTM's player until the tab is reopened
         self.keepAppPlayer = YES;
