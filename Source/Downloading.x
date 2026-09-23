@@ -330,32 +330,24 @@ static NSArray<NSDictionary *> *YTMUHeaderTexts(UIView *view) {
     return texts;
 }
 
-// Picture of a view: UIImageView image or a node's layer contents (YTM draws with Texture)
-static UIImage *YTMUImageOfView(UIView *view) {
-    if ([view isKindOfClass:[UIImageView class]] && ((UIImageView *)view).image)
-        return ((UIImageView *)view).image;
-    id contents = view.layer.contents;
-    if (contents && CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID())
-        return [UIImage imageWithCGImage:(__bridge CGImageRef)contents];
-    return nil;
-}
-
-static void YTMUCollectAvatars(UIView *view, UIView *root, NSMutableArray<NSDictionary *> *output, NSUInteger depth) {
-    if (!view || view.hidden || depth > 40)
+// Walks layers, not views: YTM draws the header with layer-backed Texture nodes
+static void YTMUCollectAvatars(CALayer *layer, CALayer *root, NSMutableArray<NSDictionary *> *output, NSUInteger depth) {
+    if (!layer || layer.hidden || depth > 60)
         return;
-    CGSize size = view.bounds.size;
+    CGSize size = layer.bounds.size;
     BOOL square = fabs(size.width - size.height) <= 3;
     BOOL small = size.width >= 16 && size.width <= 72;
     BOOL cover = size.width >= 150;
-    if (square && (small || cover)) {
-        UIImage *image = YTMUImageOfView(view);
-        if (image && image.size.width >= 16) {
-            CGRect frame = [view convertRect:view.bounds toView:root];
-            [output addObject:@{@"image": image, @"y": @(CGRectGetMinY(frame)), @"cover": @(cover)}];
+    id contents = layer.contents;
+    if (square && (small || cover) && contents && CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID()) {
+        CGImageRef cgImage = (__bridge CGImageRef)contents;
+        if (CGImageGetWidth(cgImage) >= 16) {
+            CGRect frame = [layer convertRect:layer.bounds toLayer:root];
+            [output addObject:@{@"image": [UIImage imageWithCGImage:cgImage], @"y": @(CGRectGetMinY(frame)), @"cover": @(cover)}];
         }
     }
-    for (UIView *subview in view.subviews)
-        YTMUCollectAvatars(subview, root, output, depth + 1);
+    for (CALayer *sublayer in layer.sublayers)
+        YTMUCollectAvatars(sublayer, root, output, depth + 1);
 }
 
 // Album pages show the artist's round picture at the very top of the header
@@ -368,18 +360,17 @@ static UIImage *YTMUHeaderAvatar(UIView *view) {
     }
     UIView *root = header.isViewLoaded ? header.view : view.superview;
     NSMutableArray<NSDictionary *> *avatars = [NSMutableArray array];
-    YTMUCollectAvatars(root, root, avatars, 0);
+    YTMUCollectAvatars(root.layer, root.layer, avatars, 0);
     // Only small pictures above the album cover (icons sit below it)
     double coverY = -1;
     for (NSDictionary *avatar in avatars) {
         if ([avatar[@"cover"] boolValue] && (coverY < 0 || [avatar[@"y"] doubleValue] < coverY))
             coverY = [avatar[@"y"] doubleValue];
     }
-    if (coverY < 0)
-        return nil;
+    // No cover found in this part of the page: the artist picture is the topmost one
     NSDictionary *top = nil;
     for (NSDictionary *avatar in avatars) {
-        if ([avatar[@"cover"] boolValue] || [avatar[@"y"] doubleValue] >= coverY)
+        if ([avatar[@"cover"] boolValue] || (coverY >= 0 && [avatar[@"y"] doubleValue] >= coverY))
             continue;
         if (!top || [avatar[@"y"] doubleValue] < [top[@"y"] doubleValue])
             top = avatar;

@@ -358,6 +358,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 @property (nonatomic, strong) YTMUEqualizerView *equalizer;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
+@property (nonatomic, strong) UIButton *menuButton;
 @end
 
 @implementation YTMUTrackCell
@@ -396,10 +397,17 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     texts.spacing = 3;
     texts.translatesAutoresizingMaskIntoConstraints = NO;
 
+    // Vertical ⋮ like YTM's song rows (only where onMenu is set)
+    self.menuButton = YTMUIconButton(@"ellipsis", 16, [UIColor whiteColor]);
+    self.menuButton.transform = CGAffineTransformMakeRotation((CGFloat)M_PI_2);
+    self.menuButton.hidden = YES;
+    [self.menuButton addTarget:self action:@selector(menuTapped:) forControlEvents:UIControlEventTouchUpInside];
+
     [self.contentView addSubview:self.artworkView];
     [self.contentView addSubview:self.equalizerBackground];
     [self.equalizerBackground addSubview:self.equalizer];
     [self.contentView addSubview:texts];
+    [self.contentView addSubview:self.menuButton];
 
     [NSLayoutConstraint activateConstraints:@[
         [self.artworkView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
@@ -418,12 +426,33 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
         [self.equalizer.widthAnchor constraintEqualToConstant:16],
         [self.equalizer.heightAnchor constraintEqualToConstant:14],
 
+        [self.menuButton.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-4],
+        [self.menuButton.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [self.menuButton.widthAnchor constraintEqualToConstant:44],
+        [self.menuButton.heightAnchor constraintEqualToConstant:44],
+
+        // Long titles / artists end in "…" before the ⋮
         [texts.leadingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor constant:14],
         [texts.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-        [texts.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+        [texts.trailingAnchor constraintEqualToAnchor:self.menuButton.leadingAnchor constant:-4],
         [self.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:64]
     ]];
     return self;
+}
+
+- (void)setOnMenu:(void (^)(UIButton *))onMenu {
+    _onMenu = [onMenu copy];
+    self.menuButton.hidden = _onMenu == nil;
+}
+
+- (void)prepareForReuse {
+    [super prepareForReuse];
+    self.onMenu = nil;
+}
+
+- (void)menuTapped:(UIButton *)sender {
+    if (self.onMenu)
+        self.onMenu(sender);
 }
 
 - (void)configureWithTrack:(YTMUOfflineTrack *)track isCurrent:(BOOL)isCurrent isPlaying:(BOOL)isPlaying {
@@ -1034,10 +1063,14 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 
     UIStackView *infoRow = [[UIStackView alloc] initWithArrangedSubviews:@[subtitle]];
     infoRow.axis = UILayoutConstraintAxisHorizontal;
-    infoRow.spacing = 8;
+    infoRow.spacing = 6;
     infoRow.alignment = UIStackViewAlignmentCenter;
-    for (NSString *format in self.collection.formats)
+    for (NSString *format in self.collection.formats) {
+        UILabel *dot = YTMULabel([UIFont systemFontOfSize:15], YTMUSecondaryText());
+        dot.text = @"•";
+        [infoRow addArrangedSubview:dot];
         [infoRow addArrangedSubview:[YTMUBadgeLabel badgeWithText:[@"." stringByAppendingString:format]]];
+    }
 
     // Description, 2 lines; "...More" only when it doesn't fit
     self.detailsLabel = YTMULabel([UIFont systemFontOfSize:14], YTMUSecondaryText());
@@ -1056,6 +1089,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     UIButton *shuffle = YTMUCircleButton(@"shuffle", 48, 19, [UIColor colorWithWhite:1.0 alpha:0.12], YTMUPureWhite());
     UIButton *play = YTMUCircleButton(@"play.fill", 64, 26, YTMUPureWhite(), [UIColor blackColor]);
     UIButton *menu = YTMUCircleButton(@"ellipsis", 48, 19, [UIColor colorWithWhite:1.0 alpha:0.12], YTMUPureWhite());
+    menu.transform = CGAffineTransformMakeRotation((CGFloat)M_PI_2); // vertical ⋮ like YTM
     [shuffle addTarget:self action:@selector(shuffleAll) forControlEvents:UIControlEventTouchUpInside];
     [play addTarget:self action:@selector(playAll) forControlEvents:UIControlEventTouchUpInside];
     [menu addTarget:self action:@selector(showMenu:) forControlEvents:UIControlEventTouchUpInside];
@@ -1190,6 +1224,10 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
     BOOL isCurrent = [player.currentTrack.url isEqual:track.url];
     [cell configureWithTrack:track isCurrent:isCurrent isPlaying:player.isPlaying];
+    __weak __typeof(self) weakSelf = self;
+    cell.onMenu = ^(UIButton *sender) {
+        [weakSelf showMenuForTrack:track from:sender];
+    };
     return cell;
 }
 
@@ -1199,22 +1237,19 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     [player playTracks:self.tracks startIndex:indexPath.row shuffle:player.isShuffled];
 }
 
-- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    YTMUOfflineTrack *track = self.tracks[(NSUInteger)indexPath.row];
-
-    UIContextualAction *share = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:nil handler:^(UIContextualAction *action, UIView *sourceView, void (^completion)(BOOL)) {
-        YTMUShare(@[track.url], self, sourceView);
-        completion(YES);
-    }];
-    share.image = [UIImage systemImageNamed:@"square.and.arrow.up"];
-    share.backgroundColor = [UIColor systemBlueColor];
-
-    UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:nil handler:^(UIContextualAction *action, UIView *sourceView, void (^completion)(BOOL)) {
-        [self confirmDeleteTrack:track completion:completion];
-    }];
-    delete.image = [UIImage systemImageNamed:@"trash"];
-
-    return [UISwipeActionsConfiguration configurationWithActions:@[delete, share]];
+- (void)showMenuForTrack:(YTMUOfflineTrack *)track from:(UIButton *)sender {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:track.title message:track.artist preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        YTMUShare(@[track.url], self, sender);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [self confirmDeleteTrack:track completion:^(BOOL deleted) {
+        }];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sender;
+    sheet.popoverPresentationController.sourceRect = sender.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)confirmDeleteTrack:(YTMUOfflineTrack *)track completion:(void (^)(BOOL))completion {
@@ -1222,6 +1257,9 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
                                                                    message:@"Delete this downloaded song?"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+        if ([player.currentTrack.url isEqual:track.url])
+            [player stop];
         [[NSFileManager defaultManager] removeItemAtURL:track.url error:nil];
         NSMutableArray *tracks = [self.tracks mutableCopy];
         [tracks removeObject:track];

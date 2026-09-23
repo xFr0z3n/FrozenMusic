@@ -42,6 +42,7 @@ FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 #pragma mark - Cells
 
 @interface YTMUTrackCell : UITableViewCell
+@property (nonatomic, copy) void (^onMenu)(UIButton *sender); // ⋮ shown only when set
 - (void)configureWithTrack:(YTMUOfflineTrack *)track isCurrent:(BOOL)isCurrent isPlaying:(BOOL)isPlaying;
 @end
 
