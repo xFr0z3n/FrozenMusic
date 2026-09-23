@@ -9,6 +9,15 @@ FOUNDATION_EXPORT NSString *const YTMUOfflinePlayerProgressNotification;
 // Implemented in Downloading.x: pauses YouTube Music's own player
 FOUNDATION_EXPORT void YTMUPauseAppPlayer(void);
 
+// Lock screen / Control Center ownership (used by the hooks in YTMURemoteGuard.x
+// and Downloading.x so YTM's own handlers stay quiet while offline music is on)
+FOUNDATION_EXPORT BOOL YTMUOfflinePlayerOwnsRemote(void);
+FOUNDATION_EXPORT BOOL YTMUOfflinePlayerIsRegisteringTargets(void);
+FOUNDATION_EXPORT BOOL YTMUOfflinePlayerHandlesCommand(id command);
+FOUNDATION_EXPORT BOOL YTMUOfflinePlayerIsWritingNowPlaying(void);
+// YES = drop this lock-screen info YTM wants to set (offline player is showing its own)
+FOUNDATION_EXPORT BOOL YTMUOfflinePlayerShouldBlockAppNowPlaying(NSDictionary *info);
+
 #pragma mark - Track
 
 @interface YTMUOfflineTrack : NSObject

@@ -4,6 +4,26 @@
 NSString *const YTMUOfflinePlayerDidChangeNotification = @"YTMUOfflinePlayerDidChange";
 NSString *const YTMUOfflinePlayerProgressNotification = @"YTMUOfflinePlayerProgress";
 
+#pragma mark - Remote ownership
+
+// YES from the moment offline music starts until YTM plays something again
+static BOOL ytmuOwnsRemote = NO;
+static NSTimeInterval ytmuOwnedSince = 0;
+static BOOL ytmuRegisteringTargets = NO;
+static BOOL ytmuWritingNowPlaying = NO;
+
+BOOL YTMUOfflinePlayerOwnsRemote(void) {
+    return ytmuOwnsRemote;
+}
+
+BOOL YTMUOfflinePlayerIsRegisteringTargets(void) {
+    return ytmuRegisteringTargets;
+}
+
+BOOL YTMUOfflinePlayerIsWritingNowPlaying(void) {
+    return ytmuWritingNowPlaying;
+}
+
 #pragma mark - Track
 
 @implementation YTMUOfflineTrack
@@ -90,6 +110,9 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
 #pragma mark - Player
 
 @interface YTMUOfflinePlayer () <AVAudioPlayerDelegate>
+- (void)releaseRemote;
+- (void)unregisterRemoteCommands;
+- (BOOL)handlesCommand:(id)command;
 @property (nonatomic, readwrite) NSArray<YTMUOfflineTrack *> *tracks;
 @property (nonatomic, strong) NSArray<NSNumber *> *order;   // play order (indexes into tracks)
 @property (nonatomic) NSInteger position;                   // position in order
@@ -115,9 +138,34 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
 
 - (void)appPlayerDidActivate:(NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
+        [self releaseRemote];
         if (self.audioPlayer.isPlaying)
             [self pause];
     });
+}
+
+#pragma mark Remote ownership
+
+- (void)takeRemote {
+    ytmuOwnsRemote = YES;
+    ytmuOwnedSince = [NSDate timeIntervalSinceReferenceDate];
+    [self registerRemoteCommands];
+}
+
+// YTM is playing again: its lock-screen controls take over
+- (void)releaseRemote {
+    if (!ytmuOwnsRemote)
+        return;
+    ytmuOwnsRemote = NO;
+    [self unregisterRemoteCommands];
+}
+
+- (BOOL)handlesCommand:(id)command {
+    for (NSArray *pair in self.commandTargets) {
+        if (pair[0] == command)
+            return YES;
+    }
+    return NO;
 }
 
 #pragma mark State
@@ -212,7 +260,7 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
 
     YTMUPauseAppPlayer();
     [self activateSession];
-    [self registerRemoteCommands];
+    [self takeRemote];
 
     self.audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:track.url error:nil];
     self.audioPlayer.delegate = self;
@@ -231,6 +279,7 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
     }
     YTMUPauseAppPlayer();
     [self activateSession];
+    [self takeRemote];
     [self.audioPlayer play];
     [self startProgressTimer];
     [self notifyChange];
@@ -289,7 +338,10 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
     [self.progressTimer invalidate];
     self.progressTimer = nil;
     [self unregisterRemoteCommands];
+    ytmuOwnsRemote = NO;
+    ytmuWritingNowPlaying = YES;
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;
+    ytmuWritingNowPlaying = NO;
     [[NSNotificationCenter defaultCenter] postNotificationName:YTMUOfflinePlayerDidChangeNotification object:self];
 }
 
@@ -316,7 +368,8 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
 
 - (void)updateNowPlaying {
     YTMUOfflineTrack *track = self.currentTrack;
-    if (!track || !self.audioPlayer)
+    // Not ours while YTM has the lock screen
+    if (!track || !self.audioPlayer || !ytmuOwnsRemote)
         return;
 
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
@@ -335,7 +388,9 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
             return artwork;
         }];
     }
+    ytmuWritingNowPlaying = YES;
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = info;
+    ytmuWritingNowPlaying = NO;
 }
 
 - (void)registerRemoteCommands {
@@ -343,6 +398,8 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
         return;
     MPRemoteCommandCenter *center = [MPRemoteCommandCenter sharedCommandCenter];
     __weak __typeof(self) weakSelf = self;
+    // Our targets must not get wrapped by YTMURemoteGuard.x
+    ytmuRegisteringTargets = YES;
 
     [self.commandTargets addObject:@[center.playCommand, [center.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
         [weakSelf play];
@@ -369,6 +426,11 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
             [weakSelf seekTo:((MPChangePlaybackPositionCommandEvent *)event).positionTime];
         return MPRemoteCommandHandlerStatusSuccess;
     }]]];
+    ytmuRegisteringTargets = NO;
+
+    // YTM may have greyed some of them out
+    for (NSArray *pair in self.commandTargets)
+        ((MPRemoteCommand *)pair[0]).enabled = YES;
 }
 
 - (void)unregisterRemoteCommands {
@@ -380,3 +442,29 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
 }
 
 @end
+
+BOOL YTMUOfflinePlayerHandlesCommand(id command) {
+    return ytmuOwnsRemote && [[YTMUOfflinePlayer shared] handlesCommand:command];
+}
+
+BOOL YTMUOfflinePlayerShouldBlockAppNowPlaying(NSDictionary *info) {
+    if (!ytmuOwnsRemote)
+        return NO;
+    id rate = info[MPNowPlayingInfoPropertyPlaybackRate];
+    BOOL appIsPlaying = [rate isKindOfClass:[NSNumber class]] && [(NSNumber *)rate doubleValue] > 0;
+    // Right after the offline start YTM can still report its old "playing" state
+    if (appIsPlaying && [NSDate timeIntervalSinceReferenceDate] - ytmuOwnedSince > 2.0) {
+        // YTM really plays again (resumed from its own UI): step aside
+        ytmuOwnsRemote = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+            if (ytmuOwnsRemote) // offline music was started again meanwhile
+                return;
+            [player unregisterRemoteCommands];
+            if (player.isPlaying)
+                [player pause];
+        });
+        return NO;
+    }
+    return YES;
+}

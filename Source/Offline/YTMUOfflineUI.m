@@ -177,6 +177,38 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
 @end
 
+#pragma mark - Playlist menu
+
+void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void)) {
+    if (!collection || !presenter)
+        return;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:collection.name
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        YTMUShare(collection.files, presenter, source);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:collection.name
+                                                                       message:collection.isAlbum ? @"Delete all downloaded songs of this album?" : @"Delete all downloaded songs of this playlist?"
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *deleteAction) {
+            YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+            if ([player.currentTrack.url.path hasPrefix:collection.folder.path])
+                [player stop];
+            [[NSFileManager defaultManager] removeItemAtURL:collection.folder error:nil];
+            if (onDeleted)
+                onDeleted();
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        [presenter presentViewController:alert animated:YES completion:nil];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = source;
+    sheet.popoverPresentationController.sourceRect = source.bounds;
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
 #pragma mark - Badge
 
 @implementation YTMUBadgeLabel
@@ -376,6 +408,7 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
 @interface YTMUCollectionCell ()
 @property (nonatomic, strong) UIImageView *coverView;
+@property (nonatomic, strong) UIButton *menuButton;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
 @end
@@ -399,33 +432,49 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     self.coverView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
     self.coverView.translatesAutoresizingMaskIntoConstraints = NO;
 
-    self.titleLabel = YTMULabel([UIFont systemFontOfSize:17 weight:UIFontWeightSemibold], [UIColor whiteColor]);
-    self.titleLabel.numberOfLines = 2;
+    self.titleLabel = YTMULabel([UIFont systemFontOfSize:16 weight:UIFontWeightSemibold], [UIColor whiteColor]);
+    self.titleLabel.numberOfLines = 1;
     self.subtitleLabel = YTMULabel([UIFont systemFontOfSize:14], YTMUSecondaryText());
-    self.subtitleLabel.numberOfLines = 2;
+    self.subtitleLabel.numberOfLines = 1;
 
     UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[self.titleLabel, self.subtitleLabel]];
     texts.axis = UILayoutConstraintAxisVertical;
-    texts.spacing = 4;
+    texts.spacing = 3;
     texts.translatesAutoresizingMaskIntoConstraints = NO;
+
+    // Vertical ⋮ like YTM's library rows
+    self.menuButton = YTMUIconButton(@"ellipsis", 16, [UIColor whiteColor]);
+    self.menuButton.transform = CGAffineTransformMakeRotation((CGFloat)M_PI_2);
+    [self.menuButton addTarget:self action:@selector(menuTapped:) forControlEvents:UIControlEventTouchUpInside];
 
     [self.contentView addSubview:self.coverView];
     [self.contentView addSubview:texts];
+    [self.contentView addSubview:self.menuButton];
 
     [NSLayoutConstraint activateConstraints:@[
         [self.coverView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
         [self.coverView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-        [self.coverView.widthAnchor constraintEqualToConstant:72],
-        [self.coverView.heightAnchor constraintEqualToConstant:72],
+        [self.coverView.widthAnchor constraintEqualToConstant:56],
+        [self.coverView.heightAnchor constraintEqualToConstant:56],
         [self.coverView.topAnchor constraintGreaterThanOrEqualToAnchor:self.contentView.topAnchor constant:8],
         [self.coverView.bottomAnchor constraintLessThanOrEqualToAnchor:self.contentView.bottomAnchor constant:-8],
 
-        [texts.leadingAnchor constraintEqualToAnchor:self.coverView.trailingAnchor constant:16],
-        [texts.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+        [self.menuButton.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-4],
+        [self.menuButton.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [self.menuButton.widthAnchor constraintEqualToConstant:44],
+        [self.menuButton.heightAnchor constraintEqualToConstant:44],
+
+        [texts.leadingAnchor constraintEqualToAnchor:self.coverView.trailingAnchor constant:14],
+        [texts.trailingAnchor constraintEqualToAnchor:self.menuButton.leadingAnchor constant:-4],
         [texts.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-        [self.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:88]
+        [self.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:72]
     ]];
     return self;
+}
+
+- (void)menuTapped:(UIButton *)sender {
+    if (self.onMenu)
+        self.onMenu(sender);
 }
 
 - (void)configureWithCollection:(YTMUCollection *)collection {
@@ -517,6 +566,12 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)setOnVisibilityChange:(void (^)(BOOL))onVisibilityChange {
+    _onVisibilityChange = [onVisibilityChange copy];
+    if (_onVisibilityChange)
+        _onVisibilityChange(!self.hidden);
 }
 
 - (void)refresh {
@@ -777,6 +832,7 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 @property (nonatomic, strong) YTMUMiniPlayerView *miniPlayer;
 @property (nonatomic, strong) NSLayoutConstraint *miniPlayerHeight;
 @property (nonatomic, strong) UILabel *detailsLabel;
+- (void)updateMiniPlayerHeight;
 @property (nonatomic, strong) UIButton *moreButton;
 @property (nonatomic) BOOL detailsExpanded;
 @end
@@ -821,7 +877,7 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     self.miniPlayerHeight.active = YES;
     __weak __typeof(self) weakSelf = self;
     self.miniPlayer.onVisibilityChange = ^(BOOL visible) {
-        weakSelf.miniPlayerHeight.constant = visible ? 64 + weakSelf.view.safeAreaInsets.bottom : 0;
+        [weakSelf updateMiniPlayerHeight];
     };
 
     UIButton *backButton = YTMUIconButton(@"chevron.left", 16, [UIColor whiteColor]);
@@ -859,6 +915,21 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)updateMiniPlayerHeight {
+    self.miniPlayerHeight.constant = self.miniPlayer.hidden ? 0 : 64 + self.view.safeAreaInsets.bottom;
+}
+
+- (void)viewSafeAreaInsetsDidChange {
+    [super viewSafeAreaInsetsDidChange];
+    [self updateMiniPlayerHeight];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self.miniPlayer refresh];
+    [self updateMiniPlayerHeight];
 }
 
 - (void)loadTracks {
@@ -1000,36 +1071,11 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 }
 
 - (void)showMenu:(UIButton *)sender {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:self.collection.name
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        YTMUShare(self.collection.files, self, sender);
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        [self confirmDeleteCollection];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sender;
-    sheet.popoverPresentationController.sourceRect = sender.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-
-- (void)confirmDeleteCollection {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:self.collection.name
-                                                                   message:@"Delete all downloaded songs of this playlist?"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
-        if ([player.currentTrack.url.path hasPrefix:self.collection.folder.path])
-            [player stop];
-        [[NSFileManager defaultManager] removeItemAtURL:self.collection.folder error:nil];
+    YTMUShowCollectionMenu(self.collection, self, sender, ^{
         if (self.onChange)
             self.onChange();
         [self dismissViewControllerAnimated:YES completion:nil];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    });
 }
 
 - (void)viewDidLayoutSubviews {
