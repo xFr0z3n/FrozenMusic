@@ -1,5 +1,6 @@
 #import "YTMUOfflineUI.h"
 #import <QuartzCore/QuartzCore.h>
+#include <float.h>
 
 #pragma mark - Helpers
 
@@ -108,6 +109,128 @@ UIColor *YTMUHueColor(UIImage *cover) {
     double colorfulness = MIN(1.0, satSum / (side * side) * 3.0);
     saturation = MIN(saturation, 0.35 + 0.3 * colorfulness);
     return [UIColor colorWithHue:hue saturation:saturation brightness:0.36 alpha:1.0];
+}
+
+// YTM-style palette hue: the cover's 3 main colors (k-means, colorful pixels
+// count more), each placed left/middle/right where it sits in the cover,
+// dimmed like YTM. Returned as a 3x1 image to be stretched over the header.
+UIImage *YTMUHueImage(UIImage *cover) {
+    CGImageRef cgImage = cover.CGImage;
+    if (!cgImage)
+        return nil;
+
+    const int side = 32, k = 3, count = 32 * 32;
+    unsigned char *pixels = calloc(count * 4, 1);
+    if (!pixels)
+        return nil;
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(pixels, side, side, 8, side * 4, colorSpace, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGContextDrawImage(context, CGRectMake(0, 0, side, side), cgImage);
+    CGContextRelease(context);
+    CGColorSpaceRelease(colorSpace);
+
+    double rgb[32 * 32][3], weight[32 * 32];
+    for (int i = 0; i < count; i++) {
+        double r = pixels[i * 4] / 255.0, g = pixels[i * 4 + 1] / 255.0, b = pixels[i * 4 + 2] / 255.0;
+        double maxC = MAX(r, MAX(g, b)), minC = MIN(r, MIN(g, b));
+        double saturation = maxC > 0 ? (maxC - minC) / maxC : 0;
+        rgb[i][0] = r;
+        rgb[i][1] = g;
+        rgb[i][2] = b;
+        weight[i] = 0.15 + saturation * maxC * 3.0;
+    }
+    free(pixels);
+
+    // Start: most colorful pixel, then each next = farthest from the chosen ones
+    double centers[3][3];
+    int best = 0;
+    for (int i = 1; i < count; i++) {
+        if (weight[i] > weight[best])
+            best = i;
+    }
+    memcpy(centers[0], rgb[best], sizeof(centers[0]));
+    for (int c = 1; c < k; c++) {
+        double farthest = -1;
+        int pick = 0;
+        for (int i = 0; i < count; i++) {
+            double nearest = DBL_MAX;
+            for (int j = 0; j < c; j++) {
+                double d = pow(rgb[i][0] - centers[j][0], 2) + pow(rgb[i][1] - centers[j][1], 2) + pow(rgb[i][2] - centers[j][2], 2);
+                nearest = MIN(nearest, d);
+            }
+            if (nearest * weight[i] > farthest) {
+                farthest = nearest * weight[i];
+                pick = i;
+            }
+        }
+        memcpy(centers[c], rgb[pick], sizeof(centers[c]));
+    }
+
+    double sumX[3] = {0}, total[3] = {0};
+    for (int iteration = 0; iteration < 8; iteration++) {
+        double sums[3][3] = {{0}};
+        memset(sumX, 0, sizeof(sumX));
+        memset(total, 0, sizeof(total));
+        for (int i = 0; i < count; i++) {
+            int nearest = 0;
+            double nearestD = DBL_MAX;
+            for (int c = 0; c < k; c++) {
+                double d = pow(rgb[i][0] - centers[c][0], 2) + pow(rgb[i][1] - centers[c][1], 2) + pow(rgb[i][2] - centers[c][2], 2);
+                if (d < nearestD) {
+                    nearestD = d;
+                    nearest = c;
+                }
+            }
+            for (int ch = 0; ch < 3; ch++)
+                sums[nearest][ch] += rgb[i][ch] * weight[i];
+            sumX[nearest] += (i % side) * weight[i];
+            total[nearest] += weight[i];
+        }
+        for (int c = 0; c < k; c++) {
+            if (total[c] <= 0)
+                continue;
+            for (int ch = 0; ch < 3; ch++)
+                centers[c][ch] = sums[c][ch] / total[c];
+        }
+    }
+
+    // Left to right by where each color mostly is in the cover
+    int order[3] = {0, 1, 2};
+    double meanX[3];
+    for (int c = 0; c < k; c++)
+        meanX[c] = total[c] > 0 ? sumX[c] / total[c] : side / 2.0;
+    for (int a = 0; a < k; a++) {
+        for (int b = a + 1; b < k; b++) {
+            if (meanX[order[b]] < meanX[order[a]]) {
+                int swap = order[a];
+                order[a] = order[b];
+                order[b] = swap;
+            }
+        }
+    }
+
+    NSMutableArray<UIColor *> *colors = [NSMutableArray array];
+    for (int slot = 0; slot < 3; slot++) {
+        const double *c = centers[order[slot]];
+        UIColor *color = [UIColor colorWithRed:c[0] green:c[1] blue:c[2] alpha:1.0];
+        CGFloat hue = 0, saturation = 0, brightness = 0, alpha = 0;
+        [color getHue:&hue saturation:&saturation brightness:&brightness alpha:&alpha];
+        // Dim like YTM: bright parts ~0.42, dark parts stay dark
+        brightness = MAX(0.10, MIN(0.42, brightness * 0.55));
+        saturation = MIN(saturation, 0.65);
+        [colors addObject:[UIColor colorWithHue:hue saturation:saturation brightness:brightness alpha:1.0]];
+    }
+
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = 1.0;
+    format.opaque = YES;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(3, 1) format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *rendererContext) {
+        for (NSUInteger slot = 0; slot < colors.count; slot++) {
+            [colors[slot] setFill];
+            UIRectFill(CGRectMake(slot, 0, 1, 1));
+        }
+    }];
 }
 
 // Vertical gradient layer (class looked up at runtime, no extra linking)
@@ -1272,7 +1395,15 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     UIView *header = [UIView new];
     // Cover-colored hue at the top, like YTM (also with OLED: only the rest is black)
     self.backdrop = [CALayer layer];
-    self.backdrop.backgroundColor = YTMUHueColor(self.collection.cover).CGColor;
+    UIImage *hue = YTMUHueImage(self.collection.cover);
+    if (hue) {
+        // 3 pixels stretched with linear filtering = soft blend of the cover's colors
+        self.backdrop.contents = (__bridge id)hue.CGImage;
+        self.backdrop.contentsGravity = @"resize";
+        self.backdrop.magnificationFilter = @"linear";
+    } else {
+        self.backdrop.backgroundColor = YTMUHueColor(self.collection.cover).CGColor;
+    }
     // Fades into the page background
     self.gradient = (CAGradientLayer *)[NSClassFromString(@"CAGradientLayer") layer];
     self.gradient.colors = @[(id)[UIColor blackColor].CGColor, (id)[UIColor clearColor].CGColor];
@@ -1370,17 +1501,23 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     // Space above the buttons when the description is the last text
     self.detailsSpacingColumn = column;
 
-    [header addSubview:cover];
     [header addSubview:column];
 
     CGFloat top = UIApplication.sharedApplication.keyWindow.safeAreaInsets.top + 48;
+    // Artists / creators: their saved picture is tiny, so no picture, text moves up
+    NSLayoutConstraint *columnTop = [column.topAnchor constraintEqualToAnchor:header.topAnchor constant:top];
+    if (!self.collection.kind) {
+        [header addSubview:cover];
+        [NSLayoutConstraint activateConstraints:@[
+            [cover.topAnchor constraintEqualToAnchor:header.topAnchor constant:top],
+            [cover.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
+            [cover.widthAnchor constraintEqualToConstant:220],
+            [cover.heightAnchor constraintEqualToConstant:220]
+        ]];
+        columnTop = [column.topAnchor constraintEqualToAnchor:cover.bottomAnchor constant:18];
+    }
     [NSLayoutConstraint activateConstraints:@[
-        [cover.topAnchor constraintEqualToAnchor:header.topAnchor constant:top],
-        [cover.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
-        [cover.widthAnchor constraintEqualToConstant:220],
-        [cover.heightAnchor constraintEqualToConstant:220],
-
-        [column.topAnchor constraintEqualToAnchor:cover.bottomAnchor constant:18],
+        columnTop,
         [column.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:24],
         [column.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-24],
         [column.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-16],
