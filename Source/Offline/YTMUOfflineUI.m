@@ -1,4 +1,5 @@
 #import "YTMUOfflineUI.h"
+#import "YTMUActionSheet.h"
 #import <QuartzCore/QuartzCore.h>
 #include <float.h>
 
@@ -560,69 +561,171 @@ void YTMUShowCollectionMenuWithEdit(YTMUCollection *collection, UIViewController
     YTMUShowCollectionMenuFull(collection, presenter, source, onDeleted, onEdit, nil);
 }
 
+static NSURL *YTMURootFolder(void) {
+    NSURL *documents = [[[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask] lastObject];
+    return [documents URLByAppendingPathComponent:@"YTMusicUltimate"];
+}
+
+// Top-most screen, so pages open above sheets / players
+static UIViewController *YTMUTopPresenter(UIViewController *presenter) {
+    while (presenter.presentedViewController && !presenter.presentedViewController.isBeingDismissed)
+        presenter = presenter.presentedViewController;
+    return presenter;
+}
+
+static void YTMUOpenCollectionPage(YTMUCollection *collection, UIViewController *presenter) {
+    YTMUCollectionViewController *page = [[YTMUCollectionViewController alloc] initWithCollection:collection];
+    page.modalPresentationStyle = UIModalPresentationFullScreen;
+    [YTMUTopPresenter(presenter) presentViewController:page animated:YES completion:nil];
+}
+
+// Songs of a playlist / artist are read in the background, then used
+static void YTMUWithTracks(YTMUCollection *collection, void (^use)(NSArray<YTMUOfflineTrack *> *tracks)) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSArray<YTMUOfflineTrack *> *tracks = [collection loadTracks];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            use(tracks);
+        });
+    });
+}
+
 void YTMUShowCollectionMenuFull(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void), void (^onEdit)(void), void (^onFind)(void)) {
     if (!collection || !presenter)
         return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:collection.name
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    if (onFind) {
-        [sheet addAction:[UIAlertAction actionWithTitle:collection.isAlbum ? @"Find in album" : @"Find in playlist" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            onFind();
-        }]];
-    }
-    if (onEdit) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Edit" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            onEdit();
-        }]];
-    }
+
+    // "Fr0z3n • 51 tracks" like YTM's sheet header
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    NSString *by = collection.kind ? collection.kind : (collection.isAlbum ? collection.artist : [collection.creator stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]);
+    if (by.length)
+        [parts addObject:by];
+    [parts addObject:[NSString stringWithFormat:@"%lu %@", (unsigned long)collection.files.count, collection.files.count == 1 ? @"track" : @"tracks"]];
+    YTMUActionSheet *sheet = [YTMUActionSheet sheetWithTitle:collection.name subtitle:[parts componentsJoinedByString:@" • "]];
+
+    [sheet addTile:[YTMUSheetAction actionWithTitle:@"Play next" symbol:@"text.line.first.and.arrowtriangle.forward" handler:^{
+        YTMUWithTracks(collection, ^(NSArray<YTMUOfflineTrack *> *tracks) {
+            [[YTMUOfflinePlayer shared] playNext:tracks];
+        });
+    }]];
+    [sheet addTile:[YTMUSheetAction actionWithTitle:@"Share" symbol:@"arrowshape.turn.up.right" handler:^{
+        YTMUShare(collection.files, YTMUTopPresenter(presenter), source);
+    }]];
+
     if (collection.kind) {
-        // Artist / creator: play, shuffle or share everything you have of them
-        for (NSNumber *shuffle in @[@NO, @YES]) {
-            [sheet addAction:[UIAlertAction actionWithTitle:shuffle.boolValue ? @"Shuffle" : @"Play" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                    NSArray<YTMUOfflineTrack *> *tracks = [collection loadTracks];
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [[YTMUOfflinePlayer shared] playTracks:tracks startIndex:shuffle.boolValue ? -1 : 0 shuffle:shuffle.boolValue];
-                    });
-                });
-            }]];
-        }
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Share all" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            YTMUShare(collection.files, presenter, source);
+        [sheet addAction:[YTMUSheetAction actionWithTitle:@"Play" symbol:@"play" handler:^{
+            YTMUWithTracks(collection, ^(NSArray<YTMUOfflineTrack *> *tracks) {
+                [[YTMUOfflinePlayer shared] playTracks:tracks startIndex:0 shuffle:NO];
+                [YTMUOfflinePlayer shared].sourceName = collection.name;
+            });
         }]];
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        sheet.popoverPresentationController.sourceView = source;
-        sheet.popoverPresentationController.sourceRect = source.bounds;
-        [presenter presentViewController:sheet animated:YES completion:nil];
-        return;
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        YTMUShare(collection.files, presenter, source);
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Shuffle play" symbol:@"shuffle" handler:^{
+        YTMUWithTracks(collection, ^(NSArray<YTMUOfflineTrack *> *tracks) {
+            [[YTMUOfflinePlayer shared] playTracks:tracks startIndex:-1 shuffle:YES];
+            [YTMUOfflinePlayer shared].sourceName = collection.name;
+        });
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Open folder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        // Files app, right inside this playlist's folder
-        YTMUOpenInFiles(collection.folder);
+    if (onEdit)
+        [sheet addAction:[YTMUSheetAction actionWithTitle:@"Edit" symbol:@"line.3.horizontal.decrease" handler:onEdit]];
+    if (onFind)
+        [sheet addAction:[YTMUSheetAction actionWithTitle:collection.isAlbum ? @"Find in album" : @"Find in playlist" symbol:@"magnifyingglass" handler:onFind]];
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Add to queue" symbol:@"text.line.last.and.arrowtriangle.forward" handler:^{
+        YTMUWithTracks(collection, ^(NSArray<YTMUOfflineTrack *> *tracks) {
+            [[YTMUOfflinePlayer shared] addTracksToQueue:tracks];
+        });
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:collection.name
-                                                                       message:collection.isAlbum ? @"Delete all downloaded songs of this album?" : @"Delete all downloaded songs of this playlist?"
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *deleteAction) {
-            YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
-            if ([player.currentTrack.url.path hasPrefix:collection.folder.path])
-                [player stop];
-            [[NSFileManager defaultManager] removeItemAtURL:collection.folder error:nil];
-            if (onDeleted)
-                onDeleted();
+
+    if (!collection.kind) {
+        [sheet addAction:[YTMUSheetAction actionWithTitle:@"Open folder" symbol:@"folder" handler:^{
+            YTMUOpenInFiles(collection.folder);
         }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [presenter presentViewController:alert animated:YES completion:nil];
+        [sheet addAction:[YTMUSheetAction actionWithTitle:@"Delete download" symbol:@"trash" handler:^{
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:collection.name
+                                                                           message:collection.isAlbum ? @"Delete all downloaded songs of this album?" : @"Delete all downloaded songs of this playlist?"
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *deleteAction) {
+                YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+                if ([player.currentTrack.url.path hasPrefix:collection.folder.path])
+                    [player stop];
+                [[NSFileManager defaultManager] removeItemAtURL:collection.folder error:nil];
+                if (onDeleted)
+                    onDeleted();
+            }]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            [YTMUTopPresenter(presenter) presentViewController:alert animated:YES completion:nil];
+        }]];
+    }
+    [sheet presentFrom:presenter];
+}
+
+void YTMUShowSongMenu(YTMUOfflineTrack *track, UIViewController *presenter, NSArray<YTMUSheetAction *> *extraActions, void (^onDelete)(void)) {
+    if (!track || !presenter)
+        return;
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    if (track.artist.length)
+        [parts addObject:track.artist];
+    if (track.duration > 0)
+        [parts addObject:YTMUFormatTime(track.duration)];
+    YTMUActionSheet *sheet = [YTMUActionSheet sheetWithTitle:track.title subtitle:[parts componentsJoinedByString:@" • "]];
+
+    [sheet addTile:[YTMUSheetAction actionWithTitle:@"Play next" symbol:@"text.line.first.and.arrowtriangle.forward" handler:^{
+        [[YTMUOfflinePlayer shared] playNext:@[track]];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = source;
-    sheet.popoverPresentationController.sourceRect = source.bounds;
-    [presenter presentViewController:sheet animated:YES completion:nil];
+    [sheet addTile:[YTMUSheetAction actionWithTitle:@"Share" symbol:@"arrowshape.turn.up.right" handler:^{
+        YTMUShare(@[track.url], YTMUTopPresenter(presenter), nil);
+    }]];
+
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Add to queue" symbol:@"text.line.last.and.arrowtriangle.forward" handler:^{
+        [[YTMUOfflinePlayer shared] addToQueue:track];
+    }]];
+    // Downloaded album of this song, if there is one
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Go to album" symbol:@"opticaldisc" handler:^{
+        NSString *albumName = track.album;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            YTMUCollection *found = nil;
+            for (YTMUCollection *collection in [YTMUCollection collectionsInFolder:YTMURootFolder()]) {
+                if (collection.isAlbum && albumName.length && [collection.name caseInsensitiveCompare:albumName] == NSOrderedSame) {
+                    found = collection;
+                    break;
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (found)
+                    YTMUOpenCollectionPage(found, presenter);
+                else
+                    YTMUShowInfoBox(YTMUTopPresenter(presenter), @"No album found");
+            });
+        });
+    }]];
+    // Artist page (an artist with a downloaded album)
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Go to artist" symbol:@"person" handler:^{
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSArray<YTMUCollection *> *collections = [YTMUCollection collectionsInFolder:YTMURootFolder()];
+            NSArray<YTMUOfflineTrack *> *library = [YTMUCollection libraryTracksInFolder:YTMURootFolder() collections:collections];
+            YTMUCollection *found = nil;
+            for (YTMUCollection *artist in [YTMUCollection artistsFromCollections:collections library:library]) {
+                BOOL byArtist = track.artist.length && [track.artist rangeOfString:artist.name options:NSCaseInsensitiveSearch].location != NSNotFound;
+                BOOL byAlbum = track.albumArtist.length && [track.albumArtist caseInsensitiveCompare:artist.name] == NSOrderedSame;
+                if (byArtist || byAlbum) {
+                    found = artist;
+                    break;
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (found)
+                    YTMUOpenCollectionPage(found, presenter);
+                else
+                    YTMUShowInfoBox(YTMUTopPresenter(presenter), @"No artist found");
+            });
+        });
+    }]];
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Open song" symbol:@"folder" handler:^{
+        YTMUOpenInFiles([track.url URLByDeletingLastPathComponent]);
+    }]];
+    for (YTMUSheetAction *action in extraActions)
+        [sheet addAction:action];
+    if (onDelete)
+        [sheet addAction:[YTMUSheetAction actionWithTitle:@"Delete download" symbol:@"trash" handler:onDelete]];
+    [sheet presentFrom:presenter];
 }
 
 #pragma mark - Badge
@@ -1434,24 +1537,11 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     YTMUOfflineTrack *track = [YTMUOfflinePlayer shared].currentTrack;
     if (!track)
         return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:track.title message:track.artist preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        YTMUShare(@[track.url], self, sender);
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Open folder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        YTMUOpenInFiles([track.url URLByDeletingLastPathComponent]);
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Add to queue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [[YTMUOfflinePlayer shared] addToQueue:track];
-    }]];
     // Stops everything: players disappear like nothing was played yet
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Dismiss queue" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    YTMUSheetAction *dismiss = [YTMUSheetAction actionWithTitle:@"Dismiss queue" symbol:@"text.badge.xmark" handler:^{
         [[YTMUOfflinePlayer shared] stop];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sender;
-    sheet.popoverPresentationController.sourceRect = sender.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    }];
+    YTMUShowSongMenu(track, self, @[dismiss], nil);
 }
 
 #pragma mark Queue
@@ -1728,15 +1818,19 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     self.findBar.backgroundColor = YTMUBackground();
     self.findBar.hidden = YES;
     self.findBar.translatesAutoresizingMaskIntoConstraints = NO;
+    // Same bar as the Downloads search: rounded, back arrow inside
     UIView *fieldBox = [UIView new];
     fieldBox.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.13];
-    fieldBox.layer.cornerRadius = 20;
+    fieldBox.layer.cornerRadius = 24;
     fieldBox.translatesAutoresizingMaskIntoConstraints = NO;
-    UIImageView *glass = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"magnifyingglass"]];
-    glass.tintColor = YTMUSecondaryText();
-    glass.translatesAutoresizingMaskIntoConstraints = NO;
+    UIButton *backFind = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *backFindConfig = [UIImageSymbolConfiguration configurationWithPointSize:19 weight:UIImageSymbolWeightSemibold];
+    [backFind setImage:[UIImage systemImageNamed:@"chevron.left" withConfiguration:backFindConfig] forState:UIControlStateNormal];
+    backFind.tintColor = [UIColor whiteColor];
+    backFind.translatesAutoresizingMaskIntoConstraints = NO;
+    [backFind addTarget:self action:@selector(stopFinding) forControlEvents:UIControlEventTouchUpInside];
     self.findField = [UITextField new];
-    self.findField.font = [UIFont systemFontOfSize:17];
+    self.findField.font = [UIFont systemFontOfSize:18];
     self.findField.textColor = [UIColor whiteColor];
     self.findField.tintColor = [UIColor whiteColor];
     self.findField.keyboardAppearance = UIKeyboardAppearanceDark;
@@ -1748,33 +1842,25 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     self.findField.translatesAutoresizingMaskIntoConstraints = NO;
     [self.findField addTarget:self action:@selector(findChanged) forControlEvents:UIControlEventEditingChanged];
     [self.findField addTarget:self.findField action:@selector(resignFirstResponder) forControlEvents:UIControlEventEditingDidEndOnExit];
-    UIButton *cancelFind = [UIButton buttonWithType:UIButtonTypeSystem];
-    [cancelFind setTitle:@"Cancel" forState:UIControlStateNormal];
-    [cancelFind setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    cancelFind.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightMedium];
-    cancelFind.translatesAutoresizingMaskIntoConstraints = NO;
-    [cancelFind setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-    [cancelFind addTarget:self action:@selector(stopFinding) forControlEvents:UIControlEventTouchUpInside];
-    [fieldBox addSubview:glass];
+    [fieldBox addSubview:backFind];
     [fieldBox addSubview:self.findField];
     [self.findBar addSubview:fieldBox];
-    [self.findBar addSubview:cancelFind];
     [self.view addSubview:self.findBar];
     [NSLayoutConstraint activateConstraints:@[
         [self.findBar.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.findBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.findBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.findBar.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:56],
+        [self.findBar.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:62],
         [fieldBox.leadingAnchor constraintEqualToAnchor:self.findBar.leadingAnchor constant:16],
+        [fieldBox.trailingAnchor constraintEqualToAnchor:self.findBar.trailingAnchor constant:-16],
         [fieldBox.bottomAnchor constraintEqualToAnchor:self.findBar.bottomAnchor constant:-8],
-        [fieldBox.heightAnchor constraintEqualToConstant:40],
-        [fieldBox.trailingAnchor constraintEqualToAnchor:cancelFind.leadingAnchor constant:-12],
-        [cancelFind.trailingAnchor constraintEqualToAnchor:self.findBar.trailingAnchor constant:-16],
-        [cancelFind.centerYAnchor constraintEqualToAnchor:fieldBox.centerYAnchor],
-        [glass.leadingAnchor constraintEqualToAnchor:fieldBox.leadingAnchor constant:12],
-        [glass.centerYAnchor constraintEqualToAnchor:fieldBox.centerYAnchor],
-        [self.findField.leadingAnchor constraintEqualToAnchor:glass.trailingAnchor constant:8],
-        [self.findField.trailingAnchor constraintEqualToAnchor:fieldBox.trailingAnchor constant:-8],
+        [fieldBox.heightAnchor constraintEqualToConstant:48],
+        [backFind.leadingAnchor constraintEqualToAnchor:fieldBox.leadingAnchor constant:8],
+        [backFind.centerYAnchor constraintEqualToAnchor:fieldBox.centerYAnchor],
+        [backFind.widthAnchor constraintEqualToConstant:40],
+        [backFind.heightAnchor constraintEqualToConstant:40],
+        [self.findField.leadingAnchor constraintEqualToAnchor:backFind.trailingAnchor constant:8],
+        [self.findField.trailingAnchor constraintEqualToAnchor:fieldBox.trailingAnchor constant:-12],
         [self.findField.topAnchor constraintEqualToAnchor:fieldBox.topAnchor],
         [self.findField.bottomAnchor constraintEqualToAnchor:fieldBox.bottomAnchor]
     ]];
@@ -2215,21 +2301,11 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 }
 
 - (void)showMenuForTrack:(YTMUOfflineTrack *)track from:(UIButton *)sender {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:track.title message:track.artist preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Add to queue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [[YTMUOfflinePlayer shared] addToQueue:track];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        YTMUShare(@[track.url], self, sender);
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        [self confirmDeleteTrack:track completion:^(BOOL deleted) {
+    __weak __typeof(self) weakSelf = self;
+    YTMUShowSongMenu(track, self, @[], ^{
+        [weakSelf confirmDeleteTrack:track completion:^(BOOL deleted) {
         }];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sender;
-    sheet.popoverPresentationController.sourceRect = sender.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    });
 }
 
 - (void)confirmDeleteTrack:(YTMUOfflineTrack *)track completion:(void (^)(BOOL))completion {

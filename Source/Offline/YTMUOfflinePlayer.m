@@ -304,14 +304,38 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
 }
 
 - (void)addToQueue:(YTMUOfflineTrack *)track {
-    if (!track)
+    if (track)
+        [self addTracksToQueue:@[track]];
+}
+
+- (void)addTracksToQueue:(NSArray<YTMUOfflineTrack *> *)tracks {
+    if (tracks.count == 0)
         return;
     if (self.tracks.count == 0) {
-        [self playTracks:@[track] startIndex:0 shuffle:NO];
+        [self playTracks:tracks startIndex:0 shuffle:NO];
         return;
     }
-    self.tracks = [self.tracks arrayByAddingObject:track];
-    self.order = [self.order arrayByAddingObject:@(self.tracks.count - 1)];
+    NSMutableArray<NSNumber *> *order = [self.order mutableCopy];
+    for (NSUInteger i = 0; i < tracks.count; i++)
+        [order addObject:@(self.tracks.count + i)];
+    self.tracks = [self.tracks arrayByAddingObjectsFromArray:tracks];
+    self.order = order;
+    [self notifyChange];
+}
+
+- (void)playNext:(NSArray<YTMUOfflineTrack *> *)tracks {
+    if (tracks.count == 0)
+        return;
+    if (self.tracks.count == 0) {
+        [self playTracks:tracks startIndex:0 shuffle:NO];
+        return;
+    }
+    NSMutableArray<NSNumber *> *order = [self.order mutableCopy];
+    NSUInteger insertAt = MIN((NSUInteger)(self.position + 1), order.count);
+    for (NSUInteger i = 0; i < tracks.count; i++)
+        [order insertObject:@(self.tracks.count + i) atIndex:insertAt + i];
+    self.tracks = [self.tracks arrayByAddingObjectsFromArray:tracks];
+    self.order = order;
     [self notifyChange];
 }
 

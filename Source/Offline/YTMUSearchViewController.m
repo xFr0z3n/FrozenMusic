@@ -553,20 +553,7 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
 #pragma mark Song menu
 
 - (void)showMenuForTrack:(YTMUOfflineTrack *)track from:(UIButton *)sender {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:track.title message:track.artist preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[track.url] applicationActivities:nil];
-        activity.popoverPresentationController.sourceView = sender;
-        activity.popoverPresentationController.sourceRect = sender.bounds;
-        [self presentViewController:activity animated:YES completion:nil];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Open song" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        YTMUOpenInFiles([track.url URLByDeletingLastPathComponent]);
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sender;
-    sheet.popoverPresentationController.sourceRect = sender.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    YTMUShowSongMenu(track, self, @[], nil);
 }
 
 #pragma mark Remove from history (hold)
