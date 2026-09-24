@@ -2,6 +2,7 @@
 #import "../Offline/YTMUOfflineUI.h"
 #import "../Offline/YTMUSearchViewController.h"
 #import "../Offline/YTMUHistory.h"
+#import "../Offline/YTMUActionSheet.h"
 
 // Chips at the top, like YTM's Library
 typedef NS_ENUM(NSInteger, YTMUFilter) {
@@ -42,6 +43,9 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
 @property (nonatomic, strong) UIView *topBarNormal;
 @property (nonatomic, strong) UIView *topBarEditing; // X ... Done
 @property (nonatomic) BOOL editingOrder;
+@property (nonatomic, strong) CADisplayLink *topBarLink; // every frame during transitions
+@property (nonatomic) NSInteger topBarFrames;
+@property (nonatomic) BOOL lastOwnPageOnTop;
 @end
 
 #pragma mark - YTM's player while the Downloads tab is open
@@ -162,6 +166,7 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self guardTopBar];
     if (self.view.window)
         [self layoutTopBar:YES];
     [self reloadData]; // playlist downloads may have finished meanwhile
@@ -180,6 +185,7 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    [self guardTopBar];
     // Leaving the tab: YTM's logo comes back right away. Our own pages (player,
     // playlist, search...) cover everything, so the bar just stays for them.
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -326,13 +332,10 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     }
     CGFloat safeTop = window.safeAreaInsets.top;
     CGFloat width = window.bounds.size.width;
-    UIView *host = self.topBar.superview;
-    if (!host || host == self.view || !host.window) {
-        UIView *appBar = [self appTopBarInWindow:window];
-        host = appBar ?: self.view;
-        if (self.topBar.superview != host)
-            [host addSubview:self.topBar];
-    }
+    // YTM can rebuild its bar (e.g. after full-screen pages): find it every time
+    UIView *host = [self appTopBarInWindow:window] ?: self.view;
+    if (self.topBar.superview != host)
+        [host addSubview:self.topBar];
     [host bringSubviewToFront:self.topBar];
 
     // Same height as YTM's bar, leaving its avatar (right) visible
@@ -367,6 +370,29 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     return YTMUBackgroundColor();
 }
 
+// Around page transitions YTM re-shows its logo: keep ours on top every frame for a moment
+- (void)guardTopBar {
+    self.topBarFrames = 90;
+    if (self.topBarLink)
+        return;
+    self.topBarLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(topBarTick)];
+    [self.topBarLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+- (void)topBarTick {
+    if (--self.topBarFrames <= 0) {
+        [self.topBarLink invalidate];
+        self.topBarLink = nil;
+    }
+    BOOL ownPageOnTop = !self.topBar.hidden && [self ytmu_ownScreenOnTop];
+    [self layoutTopBar:[self ytmu_isOnScreen] || ownPageOnTop];
+}
+
+- (void)presentViewController:(UIViewController *)viewController animated:(BOOL)animated completion:(void (^)(void))completion {
+    [self guardTopBar];
+    [super presentViewController:viewController animated:animated completion:completion];
+}
+
 - (void)openHistory {
     YTMUHistoryViewController *history = [[YTMUHistoryViewController alloc] initWithRoot:[self rootFolder]];
     history.modalPresentationStyle = UIModalPresentationFullScreen;
@@ -378,14 +404,12 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 }
 
 - (void)showTopMenu:(UIButton *)sender {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Edit" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [self startEditingOrder];
+    YTMUActionSheet *sheet = [YTMUActionSheet sheetWithTitle:@"Downloads" subtitle:[NSString stringWithFormat:@"%lu playlists & albums • %lu songs", (unsigned long)self.collections.count, (unsigned long)self.songs.count]];
+    __weak __typeof(self) weakSelf = self;
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Edit" symbol:@"line.3.horizontal.decrease" handler:^{
+        [weakSelf startEditingOrder];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sender;
-    sheet.popoverPresentationController.sourceRect = sender.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    [sheet presentFrom:self];
 }
 
 #pragma mark Edit (reorder playlists & albums, songs)
@@ -640,7 +664,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     UIWindow *window = self.view.window ?: [UIApplication sharedApplication].keyWindow;
     for (UIViewController *vc = window.rootViewController.presentedViewController; vc; vc = vc.presentedViewController) {
         if ([vc isKindOfClass:[YTMUCollectionViewController class]] || [vc isKindOfClass:[YTMUNowPlayingViewController class]] ||
-            [vc isKindOfClass:[YTMUSearchViewController class]] || [vc isKindOfClass:[YTMUHistoryViewController class]])
+            [vc isKindOfClass:[YTMUSearchViewController class]] || [vc isKindOfClass:[YTMUHistoryViewController class]] ||
+            [vc isKindOfClass:[YTMUActionSheet class]])
             return YES;
         // Menus / share sheets opened while YTM's player was already hidden here
         if (self.hiddenAppPlayerViews.count && ([vc isKindOfClass:[UIAlertController class]] || [vc isKindOfClass:[UIActivityViewController class]]))
@@ -651,7 +676,13 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 // Runs every 0.25 s while this tab exists: YTM's player hidden exactly while we're visible
 - (void)syncAppPlayer {
-    BOOL ownPageOnTop = !self.topBar.hidden && [self ytmu_ownScreenOnTop];
+    // One of our pages opened / closed (also ones opened from search, history...)
+    BOOL anyOwnPage = [self ytmu_ownScreenOnTop];
+    if (anyOwnPage != self.lastOwnPageOnTop) {
+        self.lastOwnPageOnTop = anyOwnPage;
+        [self guardTopBar];
+    }
+    BOOL ownPageOnTop = !self.topBar.hidden && anyOwnPage;
     [self layoutTopBar:[self ytmu_isOnScreen] || ownPageOnTop];
     if (!self.keepAppPlayer && ([self ytmu_isOnScreen] || (self.hiddenAppPlayerViews.count && [self ytmu_ownScreenOnTop])))
         [self hideAppPlayerForced:NO];
@@ -971,31 +1002,18 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 - (void)showMenuForSong:(YTMUOfflineTrack *)track from:(UIButton *)sender {
     NSURL *pngURL = [[track.url URLByDeletingPathExtension] URLByAppendingPathExtension:@"png"];
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:track.title message:track.artist preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Add to queue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [[YTMUOfflinePlayer shared] addToQueue:track];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [self shareItems:@[track.url] from:sender];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Open song" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        // Its folder in the Files app (YTMusicUltimate for single downloads)
-        YTMUOpenInFiles([track.url URLByDeletingLastPathComponent]);
-    }]];
+    __weak __typeof(self) weakSelf = self;
+    NSMutableArray<YTMUSheetAction *> *extras = [NSMutableArray array];
     // Renaming playlist songs would break their index, only single downloads
     BOOL isSingle = [[track.url URLByDeletingLastPathComponent].path isEqualToString:[self rootFolder].path];
     if (isSingle) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Rename" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [self renameSong:track];
+        [extras addObject:[YTMUSheetAction actionWithTitle:@"Rename" symbol:@"pencil" handler:^{
+            [weakSelf renameSong:track];
         }]];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        [self confirmDeleteURL:track.url name:track.url.lastPathComponent.stringByDeletingPathExtension extraURL:pngURL];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sender;
-    sheet.popoverPresentationController.sourceRect = sender.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    YTMUShowSongMenu(track, self, extras, ^{
+        [weakSelf confirmDeleteURL:track.url name:track.url.lastPathComponent.stringByDeletingPathExtension extraURL:pngURL];
+    });
 }
 
 #pragma mark Actions

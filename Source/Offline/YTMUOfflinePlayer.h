@@ -83,4 +83,6 @@ typedef NS_ENUM(NSInteger, YTMURepeatMode) {
 - (void)playQueueIndex:(NSInteger)index;
 - (void)moveQueueItemFrom:(NSInteger)from to:(NSInteger)to;
 - (void)addToQueue:(YTMUOfflineTrack *)track;       // once more, at the end
+- (void)addTracksToQueue:(NSArray<YTMUOfflineTrack *> *)tracks;
+- (void)playNext:(NSArray<YTMUOfflineTrack *> *)tracks; // right after the current song
 @end

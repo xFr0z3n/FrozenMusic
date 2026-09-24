@@ -1,4 +1,5 @@
 #import "YTMUHistory.h"
+#import "YTMUActionSheet.h"
 
 static NSString *const YTMUHistoryKey = @"YTMUPlayHistory";
 
@@ -308,24 +309,12 @@ void YTMURecordHistory(NSURL *url, BOOL isCollection) {
 }
 
 - (void)showMenuForTrack:(YTMUOfflineTrack *)track from:(UIButton *)sender {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:track.title message:track.artist preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[track.url] applicationActivities:nil];
-        activity.popoverPresentationController.sourceView = sender;
-        activity.popoverPresentationController.sourceRect = sender.bounds;
-        [self presentViewController:activity animated:YES completion:nil];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Open song" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        YTMUOpenInFiles([track.url URLByDeletingLastPathComponent]);
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Remove from history" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    __weak __typeof(self) weakSelf = self;
+    YTMUSheetAction *remove = [YTMUSheetAction actionWithTitle:@"Remove from history" symbol:@"trash" handler:^{
         YTMURemoveFromHistory(track.url);
-        [self reload];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sender;
-    sheet.popoverPresentationController.sourceRect = sender.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+        [weakSelf reload];
+    }];
+    YTMUShowSongMenu(track, self, @[remove], nil);
 }
 
 @end

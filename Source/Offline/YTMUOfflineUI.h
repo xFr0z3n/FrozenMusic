@@ -1,6 +1,8 @@
 #import <UIKit/UIKit.h>
 #import "YTMUOfflinePlayer.h"
 
+@class YTMUSheetAction;
+
 #pragma mark - Downloaded playlist / album (a folder in YTMusicUltimate)
 
 @interface YTMUCollection : NSObject
@@ -95,6 +97,10 @@ FOUNDATION_EXPORT void YTMUOpenInFiles(NSURL *folder);
 
 // Share / Delete download sheet for a downloaded playlist or album
 FOUNDATION_EXPORT void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void));
+// YTM-style song sheet: Play next / Share, Add to queue, Go to album / artist,
+// Open song, extra rows, Delete download (when onDelete is set)
+FOUNDATION_EXPORT void YTMUShowSongMenu(YTMUOfflineTrack *track, UIViewController *presenter, NSArray<YTMUSheetAction *> *extraActions, void (^onDelete)(void));
+
 // With "Find in playlist" + "Edit" on top
 FOUNDATION_EXPORT void YTMUShowCollectionMenuFull(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void), void (^onEdit)(void), void (^onFind)(void));
 // Same, with "Edit" on top (reorder the songs)
