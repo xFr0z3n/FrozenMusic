@@ -461,7 +461,7 @@ void YTMUShowInfoBox(UIViewController *presenter, NSString *text) {
     [UIView animateWithDuration:0.18 animations:^{
         box.alpha = 1;
     } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.3 delay:1.4 options:0 animations:^{
+        [UIView animateWithDuration:0.3 delay:2.8 options:0 animations:^{
             box.alpha = 0;
         } completion:^(BOOL done) {
             [box removeFromSuperview];

@@ -1192,7 +1192,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 
         [texts.leadingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor constant:12],
         [texts.centerYAnchor constraintEqualToAnchor:self.artworkView.centerYAnchor],
-        [texts.trailingAnchor constraintLessThanOrEqualToAnchor:self.playButton.leadingAnchor constant:-12],
+        [texts.trailingAnchor constraintLessThanOrEqualToAnchor:self.nextButton.leadingAnchor constant:-10],
 
         [self.playButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-16],
         [self.playButton.centerYAnchor constraintEqualToAnchor:self.artworkView.centerYAnchor],
@@ -2264,10 +2264,6 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 - (void)shuffleAll {
     [[YTMUOfflinePlayer shared] playTracks:self.tracks startIndex:-1 shuffle:YES];
     [YTMUOfflinePlayer shared].sourceName = self.collection.name;
-}
-
-- (void)shareAll:(UIButton *)sender {
-    YTMUShare(self.collection.files, self, sender);
 }
 
 #pragma mark Table
