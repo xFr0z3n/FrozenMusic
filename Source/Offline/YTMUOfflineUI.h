@@ -44,7 +44,8 @@ FOUNDATION_EXPORT NSString *YTMUTrackOrderKey(NSURL *folder); // songs of a fold
 FOUNDATION_EXPORT UIColor *YTMUAverageColor(UIImage *image);
 FOUNDATION_EXPORT UIColor *YTMUHueColor(UIImage *cover); // YTM-like page hue from a cover
 FOUNDATION_EXPORT UIImage *YTMUHueImage(UIImage *cover); // 3x1 palette of the cover for the hue
-FOUNDATION_EXPORT BOOL YTMUIsOLED(void);               // OLED Dark Theme setting on
+FOUNDATION_EXPORT BOOL YTMUIsOLED(void);
+FOUNDATION_EXPORT BOOL YTMUPrefEnabled(NSString *key); // a switch in YTMUltimate / FrozenMusic settings               // OLED Dark Theme setting on
 FOUNDATION_EXPORT UIColor *YTMUBackgroundColor(void);  // pure black with OLED
 FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 
@@ -63,6 +64,7 @@ FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 @property (nonatomic, copy) void (^onMenu)(UIButton *sender); // ⋮ shown only when set
 - (void)setSubtitleText:(NSString *)text; // after configure: custom second line
 @property (nonatomic) BOOL keepsReorderOnRight;   // queue: drag handle stays on the right
+- (void)setTrackNumber:(NSInteger)number;          // > 0: number instead of cover (album look), after configure
 - (void)configureWithTrack:(YTMUOfflineTrack *)track isCurrent:(BOOL)isCurrent isPlaying:(BOOL)isPlaying;
 @end
 
