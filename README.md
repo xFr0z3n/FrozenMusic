@@ -10,7 +10,6 @@
 
 <p align="center">
   <a href="https://fr0z3n.com">Website</a> ·
-  <a href="https://github.com/xFr0z3n/YTMusicUltimate/actions">Build</a> ·
   <a href="#credits">Credits</a>
 </p>
 
