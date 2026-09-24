@@ -34,6 +34,57 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
 }
 
 + (instancetype)trackWithURL:(NSURL *)url fallbackArtwork:(UIImage *)fallback {
+    return [self trackWithURL:url fallbackArtwork:fallback readArtwork:YES];
+}
+
++ (instancetype)lightTrackWithURL:(NSURL *)url {
+    YTMUOfflineTrack *track = [self trackWithURL:url fallbackArtwork:nil readArtwork:NO];
+    NSDate *date = nil;
+    [url getResourceValue:&date forKey:NSURLCreationDateKey error:nil];
+    track.addedDate = date;
+    return track;
+}
+
+// Embedded cover, else "Name.png" next to the file, else the folder's cover.png
++ (UIImage *)artworkForURL:(NSURL *)url {
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
+    for (AVMetadataItem *item in asset.commonMetadata) {
+        if ([item.commonKey isEqualToString:AVMetadataCommonKeyArtwork] && item.dataValue) {
+            UIImage *image = [UIImage imageWithData:item.dataValue];
+            if (image)
+                return image;
+        }
+    }
+    UIImage *png = [UIImage imageWithContentsOfFile:[[url URLByDeletingPathExtension] URLByAppendingPathExtension:@"png"].path];
+    if (png)
+        return png;
+    return [UIImage imageWithContentsOfFile:[[url URLByDeletingLastPathComponent] URLByAppendingPathComponent:@"cover.png"].path];
+}
+
+- (void)loadArtworkIfNeeded {
+    if (!self.artwork && self.url)
+        self.artwork = [YTMUOfflineTrack artworkForURL:self.url];
+}
+
+- (void)loadThumbnailIfNeeded {
+    if (self.thumbnail || !self.url)
+        return;
+    UIImage *image = self.artwork ?: [YTMUOfflineTrack artworkForURL:self.url];
+    if (!image)
+        return;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.opaque = YES;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(56, 56) format:format];
+    self.thumbnail = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        // Aspect fill into the square
+        CGSize size = image.size;
+        CGFloat scale = MAX(56.0 / MAX(size.width, 1), 56.0 / MAX(size.height, 1));
+        CGSize drawn = CGSizeMake(size.width * scale, size.height * scale);
+        [image drawInRect:CGRectMake((56 - drawn.width) / 2.0, (56 - drawn.height) / 2.0, drawn.width, drawn.height)];
+    }];
+}
+
++ (instancetype)trackWithURL:(NSURL *)url fallbackArtwork:(UIImage *)fallback readArtwork:(BOOL)readArtwork {
     YTMUOfflineTrack *track = [YTMUOfflineTrack new];
     track.url = url;
     track.format = url.pathExtension.lowercaseString;
@@ -58,7 +109,7 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
             track.artist = YTMUMetadataString(item);
         else if ([key isEqualToString:AVMetadataCommonKeyAlbumName] && YTMUMetadataString(item))
             track.album = YTMUMetadataString(item);
-        else if ([key isEqualToString:AVMetadataCommonKeyArtwork] && !track.artwork && item.dataValue)
+        else if (readArtwork && [key isEqualToString:AVMetadataCommonKeyArtwork] && !track.artwork && item.dataValue)
             track.artwork = [UIImage imageWithData:item.dataValue];
         else if ([key isEqualToString:AVMetadataCommonKeyCreationDate] && YTMUMetadataString(item).length >= 4)
             track.year = [YTMUMetadataString(item) substringToIndex:4];
@@ -261,6 +312,7 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
     YTMUPauseAppPlayer();
     [self activateSession];
     [self takeRemote];
+    [track loadArtworkIfNeeded]; // library tracks come without cover
 
     self.audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:track.url error:nil];
     self.audioPlayer.delegate = self;

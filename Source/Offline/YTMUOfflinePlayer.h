@@ -32,8 +32,15 @@ FOUNDATION_EXPORT BOOL YTMUOfflinePlayerShouldBlockAppNowPlaying(NSDictionary *i
 @property (nonatomic) NSTimeInterval duration;
 @property (nonatomic, strong) UIImage *artwork;
 
+@property (nonatomic, strong) UIImage *thumbnail;  // small cover for list rows (library tracks)
+@property (nonatomic, strong) NSDate *addedDate;   // file date, for "recently added"
+
 // Reads the file's tags + cover. Slow for big lists: call off the main thread.
 + (instancetype)trackWithURL:(NSURL *)url fallbackArtwork:(UIImage *)fallback;
+// Tags only, no cover (whole-library lists); cover comes later with the methods below
++ (instancetype)lightTrackWithURL:(NSURL *)url;
+- (void)loadArtworkIfNeeded;   // full cover (embedded, sibling .png or folder cover.png)
+- (void)loadThumbnailIfNeeded; // small cover only
 @end
 
 #pragma mark - Player

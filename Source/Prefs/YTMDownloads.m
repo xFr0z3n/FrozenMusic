@@ -1,6 +1,16 @@
 #import "YTMDownloads.h"
 #import "../Offline/YTMUOfflineUI.h"
 
+// Chips at the top, like YTM's Library
+typedef NS_ENUM(NSInteger, YTMUFilter) {
+    YTMUFilterNone = 0,
+    YTMUFilterPlaylists,
+    YTMUFilterSongs,
+    YTMUFilterAlbums,
+    YTMUFilterArtists,
+    YTMUFilterCreators
+};
+
 typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
     YTMUSectionNowPlaying = 0,
     YTMUSectionCollections,
@@ -20,6 +30,12 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
 @property (nonatomic) BOOL keepAppPlayer;
 @property (nonatomic) NSUInteger syncTicks;
 @property (nonatomic, weak) UIView *cachedPivotBar;
+@property (nonatomic) YTMUFilter filter;
+@property (nonatomic, strong) NSArray<YTMUOfflineTrack *> *library;   // every song, for Songs / Artists
+@property (nonatomic, strong) NSArray<YTMUCollection *> *people;       // artists or creators
+@property (nonatomic) BOOL loadingLibrary;
+@property (nonatomic, strong) UIView *chipHeader;
+@property (nonatomic, strong) UIScrollView *chipBar;
 @end
 
 #pragma mark - YTM's player while the Downloads tab is open
@@ -88,8 +104,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     self.tableView.estimatedSectionHeaderHeight = 44;
     if (@available(iOS 15.0, *))
         self.tableView.sectionHeaderTopPadding = 0;
-    // Room for YTM's top bar, mini player and tab bar
-    self.tableView.tableHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 64)];
+    // Room for YTM's top bar, then the filter chips
+    [self buildChipHeader];
     self.tableView.contentInset = UIEdgeInsetsMake(0, 0, 170, 0);
     [self.tableView registerClass:[YTMUTrackCell class] forCellReuseIdentifier:@"track"];
     [self.tableView registerClass:[YTMUCollectionCell class] forCellReuseIdentifier:@"collection"];
@@ -167,6 +183,149 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self.appPlayerTimer invalidate];
     [self showAppPlayer];
+}
+
+#pragma mark Filter chips
+
+- (NSArray<NSString *> *)chipTitles {
+    return @[@"Playlists", @"Songs", @"Albums", @"Artists", @"Creators"];
+}
+
+- (void)buildChipHeader {
+    self.chipHeader = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 64 + 50)];
+    self.chipBar = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 64, 1, 42)];
+    self.chipBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    self.chipBar.showsHorizontalScrollIndicator = NO;
+    self.chipBar.alwaysBounceHorizontal = YES;
+    [self.chipHeader addSubview:self.chipBar];
+    self.tableView.tableHeaderView = self.chipHeader;
+    [self rebuildChips];
+}
+
+- (UIButton *)chipWithTitle:(NSString *)title symbol:(NSString *)symbol selected:(BOOL)selected tag:(NSInteger)tag {
+    UIButton *chip = [UIButton buttonWithType:UIButtonTypeCustom];
+    UIColor *background = selected ? [UIColor colorWithWhite:0.94 alpha:1.0] : [UIColor colorWithWhite:1.0 alpha:0.12];
+    UIColor *foreground = selected ? [UIColor blackColor] : [UIColor colorWithWhite:0.98 alpha:1.0];
+    chip.backgroundColor = background;
+    chip.layer.cornerRadius = 8.0;
+    chip.tag = tag;
+    if (title) {
+        [chip setTitle:title forState:UIControlStateNormal];
+        [chip setTitleColor:foreground forState:UIControlStateNormal];
+        chip.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        chip.contentEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 14);
+    } else {
+        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
+        [chip setImage:[[UIImage systemImageNamed:symbol withConfiguration:config] imageWithTintColor:foreground renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
+        chip.contentEdgeInsets = UIEdgeInsetsMake(0, 11, 0, 11);
+    }
+    [chip addTarget:self action:@selector(chipTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [chip sizeToFit];
+    return chip;
+}
+
+- (void)rebuildChips {
+    for (UIView *view in self.chipBar.subviews)
+        [view removeFromSuperview];
+
+    // Nothing picked: all chips. Picked: [X] [Chosen], like YTM
+    NSMutableArray<UIButton *> *chips = [NSMutableArray array];
+    if (self.filter == YTMUFilterNone) {
+        NSArray<NSString *> *titles = [self chipTitles];
+        for (NSUInteger i = 0; i < titles.count; i++)
+            [chips addObject:[self chipWithTitle:titles[i] symbol:nil selected:NO tag:(NSInteger)i + 1]];
+    } else {
+        [chips addObject:[self chipWithTitle:nil symbol:@"xmark" selected:YES tag:0]];
+        [chips addObject:[self chipWithTitle:[self chipTitles][(NSUInteger)self.filter - 1] symbol:nil selected:YES tag:self.filter]];
+    }
+
+    CGFloat x = 16;
+    for (UIButton *chip in chips) {
+        chip.frame = CGRectMake(x, 4, MAX(chip.bounds.size.width, 36), 34);
+        [self.chipBar addSubview:chip];
+        x += chip.bounds.size.width + 8;
+    }
+    self.chipBar.contentSize = CGSizeMake(x + 8, 42);
+    self.chipBar.contentOffset = CGPointZero;
+}
+
+- (void)chipTapped:(UIButton *)chip {
+    YTMUFilter filter = (YTMUFilter)chip.tag;
+    // Tapping the chosen chip again, or X: back to everything
+    self.filter = (filter == self.filter) ? YTMUFilterNone : filter;
+    [self rebuildChips];
+    [self loadLibraryIfNeeded];
+    [self.tableView setContentOffset:CGPointMake(0, -self.tableView.adjustedContentInset.top) animated:NO];
+    [self.tableView reloadData];
+}
+
+- (BOOL)filterNeedsLibrary {
+    return self.filter == YTMUFilterSongs || self.filter == YTMUFilterArtists || self.filter == YTMUFilterCreators;
+}
+
+// Songs / Artists read every file's tags (cached after the first time)
+- (void)loadLibraryIfNeeded {
+    if (![self filterNeedsLibrary] || self.loadingLibrary)
+        return;
+    if (self.library) {
+        [self updatePeople];
+        return;
+    }
+    self.loadingLibrary = YES;
+    UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    spinner.color = [UIColor whiteColor];
+    spinner.frame = CGRectMake(0, 0, 1, 60);
+    [spinner startAnimating];
+    self.tableView.tableFooterView = spinner;
+
+    NSURL *root = [self rootFolder];
+    NSArray<YTMUCollection *> *collections = self.collections;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSArray<YTMUOfflineTrack *> *library = [YTMUCollection libraryTracksInFolder:root collections:collections];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.library = library;
+            self.loadingLibrary = NO;
+            self.tableView.tableFooterView = nil;
+            [self updatePeople];
+            [self.tableView reloadData];
+        });
+    });
+}
+
+- (void)updatePeople {
+    if (self.filter == YTMUFilterArtists)
+        self.people = [YTMUCollection artistsFromCollections:self.collections library:self.library ?: @[]];
+    else if (self.filter == YTMUFilterCreators)
+        self.people = [YTMUCollection creatorsFromCollections:self.collections];
+    else
+        self.people = @[];
+}
+
+// Rows of the chosen chip
+- (NSArray *)filterItems {
+    switch (self.filter) {
+        case YTMUFilterPlaylists:
+            return [self.collections filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"isAlbum == NO"]];
+        case YTMUFilterAlbums:
+            return [self.collections filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"isAlbum == YES"]];
+        case YTMUFilterSongs:
+            return self.library ?: @[];
+        case YTMUFilterArtists:
+        case YTMUFilterCreators:
+            return self.people ?: @[];
+        default:
+            return @[];
+    }
+}
+
+- (void)openCollection:(YTMUCollection *)collection {
+    YTMUCollectionViewController *page = [[YTMUCollectionViewController alloc] initWithCollection:collection];
+    page.modalPresentationStyle = UIModalPresentationFullScreen;
+    __weak __typeof(self) weakSelf = self;
+    page.onChange = ^{
+        [weakSelf reloadData];
+    };
+    [self presentViewController:page animated:YES completion:nil];
 }
 
 #pragma mark YTM's player
@@ -339,6 +498,10 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
             self.songs = songs;
             self.loading = NO;
             self.emptyView.hidden = collections.count > 0 || songs.count > 0;
+            self.library = nil; // files may have changed (cached tags make this quick)
+            [self loadLibraryIfNeeded];
+            if (self.filter == YTMUFilterPlaylists || self.filter == YTMUFilterAlbums)
+                [self updatePeople];
             [self.tableView reloadData];
         });
     });
@@ -355,10 +518,12 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 #pragma mark Table
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return YTMUSectionCount;
+    return self.filter == YTMUFilterNone ? YTMUSectionCount : 1;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (self.filter != YTMUFilterNone)
+        return (NSInteger)[self filterItems].count;
     switch (section) {
         case YTMUSectionNowPlaying:
             return [self hasNowPlaying] ? 1 : 0;
@@ -372,6 +537,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 }
 
 - (NSString *)titleForSection:(NSInteger)section {
+    if (self.filter != YTMUFilterNone)
+        return nil;
     switch (section) {
         case YTMUSectionNowPlaying:
             return [self hasNowPlaying] ? @"Now playing" : nil;
@@ -411,6 +578,30 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    __weak __typeof(self) weakSelf = self;
+    if (self.filter != YTMUFilterNone) {
+        id item = [self filterItems][(NSUInteger)indexPath.row];
+        if ([item isKindOfClass:[YTMUOfflineTrack class]]) {
+            YTMUOfflineTrack *track = item;
+            YTMUTrackCell *cell = [tableView dequeueReusableCellWithIdentifier:@"track" forIndexPath:indexPath];
+            YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+            [cell configureWithTrack:track isCurrent:[player.currentTrack.url isEqual:track.url] isPlaying:player.isPlaying];
+            cell.onMenu = ^(UIButton *sender) {
+                [weakSelf showMenuForSong:track from:sender];
+            };
+            return cell;
+        }
+        YTMUCollection *collection = item;
+        YTMUCollectionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"collection" forIndexPath:indexPath];
+        [cell configureWithCollection:collection];
+        cell.onMenu = ^(UIButton *sender) {
+            YTMUShowCollectionMenu(collection, weakSelf, sender, ^{
+                [weakSelf reloadData];
+            });
+        };
+        return cell;
+    }
+
     if (indexPath.section == YTMUSectionNowPlaying) {
         YTMUTrackCell *cell = [tableView dequeueReusableCellWithIdentifier:@"track" forIndexPath:indexPath];
         YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
@@ -422,7 +613,6 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
         YTMUCollectionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"collection" forIndexPath:indexPath];
         YTMUCollection *collection = self.collections[(NSUInteger)indexPath.row];
         [cell configureWithCollection:collection];
-        __weak __typeof(self) weakSelf = self;
         cell.onMenu = ^(UIButton *sender) {
             YTMUShowCollectionMenu(collection, weakSelf, sender, ^{
                 [weakSelf reloadData];
@@ -437,7 +627,6 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
         YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
         BOOL isCurrent = [player.currentTrack.url isEqual:track.url];
         [cell configureWithTrack:track isCurrent:isCurrent isPlaying:player.isPlaying];
-        __weak __typeof(self) weakSelf = self;
         cell.onMenu = ^(UIButton *sender) {
             [weakSelf showMenuForSong:track from:sender];
         };
@@ -450,18 +639,26 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
+    if (self.filter != YTMUFilterNone) {
+        NSArray *items = [self filterItems];
+        id item = items[(NSUInteger)indexPath.row];
+        if ([item isKindOfClass:[YTMUOfflineTrack class]]) {
+            [[YTMUOfflinePlayer shared] playTracks:items startIndex:indexPath.row shuffle:NO];
+            YTMUNowPlayingViewController *nowPlaying = [YTMUNowPlayingViewController new];
+            nowPlaying.modalPresentationStyle = UIModalPresentationFullScreen;
+            [self presentViewController:nowPlaying animated:YES completion:nil];
+        } else {
+            [self openCollection:item];
+        }
+        return;
+    }
+
     if (indexPath.section == YTMUSectionNowPlaying) {
         YTMUNowPlayingViewController *nowPlaying = [YTMUNowPlayingViewController new];
         nowPlaying.modalPresentationStyle = UIModalPresentationFullScreen;
         [self presentViewController:nowPlaying animated:YES completion:nil];
     } else if (indexPath.section == YTMUSectionCollections) {
-        YTMUCollectionViewController *page = [[YTMUCollectionViewController alloc] initWithCollection:self.collections[(NSUInteger)indexPath.row]];
-        page.modalPresentationStyle = UIModalPresentationFullScreen;
-        __weak __typeof(self) weakSelf = self;
-        page.onChange = ^{
-            [weakSelf reloadData];
-        };
-        [self presentViewController:page animated:YES completion:nil];
+        [self openCollection:self.collections[(NSUInteger)indexPath.row]];
     } else if (indexPath.section == YTMUSectionSongs) {
         YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
         [player playTracks:self.songs startIndex:indexPath.row shuffle:NO];
@@ -480,15 +677,16 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
         [self shareItems:@[track.url] from:sender];
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Open song" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        // YTMusicUltimate folder in the Files app
-        NSString *path = [[self rootFolder].path stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
-        NSURL *filesURL = path ? [NSURL URLWithString:[@"shareddocuments://" stringByAppendingString:path]] : nil;
-        if (filesURL)
-            [[UIApplication sharedApplication] openURL:filesURL options:@{} completionHandler:nil];
+        // Its folder in the Files app (YTMusicUltimate for single downloads)
+        YTMUOpenInFiles([track.url URLByDeletingLastPathComponent]);
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Rename" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [self renameSong:track];
-    }]];
+    // Renaming playlist songs would break their index, only single downloads
+    BOOL isSingle = [[track.url URLByDeletingLastPathComponent].path isEqualToString:[self rootFolder].path];
+    if (isSingle) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Rename" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [self renameSong:track];
+        }]];
+    }
     [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         [self confirmDeleteURL:track.url name:track.url.lastPathComponent.stringByDeletingPathExtension extraURL:pngURL];
     }]];

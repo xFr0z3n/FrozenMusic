@@ -67,22 +67,47 @@ static UIColor *YTMUSecondaryText(void) {
     return [UIColor colorWithWhite:1.0 alpha:0.62];
 }
 
-// YTM-style hue: the cover shrunk to 3x3 pixels (a strong blur), darkened.
-// Shown stretched with linear filtering it becomes a soft multi-color glow.
-static UIImage *YTMUBackdropImage(UIImage *cover) {
+// YTM-style hue: one color for the whole cover, where colorful pixels count
+// far more than grey/black ones (a dark cover with orange sparks gives orange,
+// a red/grey cover gives a red-tinted brown), at a fixed dim brightness.
+UIColor *YTMUHueColor(UIImage *cover) {
     CGImageRef cgImage = cover.CGImage;
     if (!cgImage)
-        return nil;
-    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
-    format.scale = 1.0;
-    format.opaque = YES;
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(3, 3) format:format];
-    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        CGContextSetInterpolationQuality(context.CGContext, kCGInterpolationHigh);
-        [cover drawInRect:CGRectMake(0, 0, 3, 3)];
-        [[UIColor colorWithWhite:0.0 alpha:0.58] setFill];
-        UIRectFillUsingBlendMode(CGRectMake(0, 0, 3, 3), kCGBlendModeNormal);
-    }];
+        return [UIColor colorWithWhite:0.16 alpha:1.0];
+
+    const size_t side = 32;
+    unsigned char *pixels = calloc(side * side * 4, 1);
+    if (!pixels)
+        return [UIColor colorWithWhite:0.16 alpha:1.0];
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(pixels, side, side, 8, side * 4, colorSpace, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGContextSetInterpolationQuality(context, kCGInterpolationMedium);
+    CGContextDrawImage(context, CGRectMake(0, 0, side, side), cgImage);
+    CGContextRelease(context);
+    CGColorSpaceRelease(colorSpace);
+
+    double r = 0, g = 0, b = 0, weightSum = 0, satSum = 0;
+    for (size_t i = 0; i < side * side; i++) {
+        double pr = pixels[i * 4] / 255.0, pg = pixels[i * 4 + 1] / 255.0, pb = pixels[i * 4 + 2] / 255.0;
+        double maxC = MAX(pr, MAX(pg, pb)), minC = MIN(pr, MIN(pg, pb));
+        double saturation = maxC > 0 ? (maxC - minC) / maxC : 0;
+        // Vivid + bright pixels dominate; plain pixels still count a little
+        double weight = 0.03 + pow(saturation, 2.0) * maxC * 4.0;
+        r += pr * weight;
+        g += pg * weight;
+        b += pb * weight;
+        weightSum += weight;
+        satSum += saturation * maxC;
+    }
+    free(pixels);
+
+    UIColor *mixed = [UIColor colorWithRed:r / weightSum green:g / weightSum blue:b / weightSum alpha:1.0];
+    CGFloat hue = 0, saturation = 0, brightness = 0, alpha = 0;
+    [mixed getHue:&hue saturation:&saturation brightness:&brightness alpha:&alpha];
+    // Covers with only a bit of color stay more muted
+    double colorfulness = MIN(1.0, satSum / (side * side) * 3.0);
+    saturation = MIN(saturation, 0.35 + 0.3 * colorfulness);
+    return [UIColor colorWithHue:hue saturation:saturation brightness:0.36 alpha:1.0];
 }
 
 // Vertical gradient layer (class looked up at runtime, no extra linking)
@@ -209,12 +234,135 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
 - (NSArray<YTMUOfflineTrack *> *)loadTracks {
     NSMutableArray<YTMUOfflineTrack *> *tracks = [NSMutableArray array];
-    for (NSURL *file in self.files)
-        [tracks addObject:[YTMUOfflineTrack trackWithURL:file fallbackArtwork:self.cover]];
+    for (NSURL *file in self.files) {
+        // Artist / creator lists mix folders: each song finds its own cover
+        YTMUOfflineTrack *track = [YTMUOfflineTrack trackWithURL:file fallbackArtwork:self.kind ? nil : self.cover];
+        [track loadArtworkIfNeeded];
+        [tracks addObject:track];
+    }
     return tracks;
 }
 
++ (NSArray<YTMUOfflineTrack *> *)libraryTracksInFolder:(NSURL *)root collections:(NSArray<YTMUCollection *> *)collections {
+    static NSMutableDictionary<NSString *, NSArray *> *cache = nil; // path -> @[date, track]
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSMutableDictionary dictionary];
+    });
+
+    NSMutableArray<NSURL *> *files = [[self audioFilesInFolder:root] mutableCopy];
+    for (YTMUCollection *collection in collections)
+        [files addObjectsFromArray:collection.files];
+
+    NSMutableArray<YTMUOfflineTrack *> *tracks = [NSMutableArray array];
+    for (NSURL *file in files) {
+        NSDate *date = nil;
+        [file getResourceValue:&date forKey:NSURLContentModificationDateKey error:nil];
+        YTMUOfflineTrack *track = nil;
+        @synchronized (cache) {
+            NSArray *entry = cache[file.path];
+            if (entry && [entry[0] isEqual:date ?: [NSNull null]])
+                track = entry[1];
+        }
+        if (!track) {
+            track = [YTMUOfflineTrack lightTrackWithURL:file];
+            @synchronized (cache) {
+                cache[file.path] = @[date ?: [NSNull null], track];
+            }
+        }
+        [tracks addObject:track];
+    }
+
+    // Recently added first
+    [tracks sortUsingComparator:^NSComparisonResult(YTMUOfflineTrack *a, YTMUOfflineTrack *b) {
+        return [(b.addedDate ?: [NSDate distantPast]) compare:(a.addedDate ?: [NSDate distantPast])];
+    }];
+    return tracks;
+}
+
+static NSArray<NSURL *> *YTMUSortedByTitle(NSArray<YTMUOfflineTrack *> *tracks) {
+    NSArray *sorted = [tracks sortedArrayUsingComparator:^NSComparisonResult(YTMUOfflineTrack *a, YTMUOfflineTrack *b) {
+        return [a.title ?: @"" localizedCaseInsensitiveCompare:b.title ?: @""];
+    }];
+    return [sorted valueForKey:@"url"];
+}
+
++ (NSArray<YTMUCollection *> *)artistsFromCollections:(NSArray<YTMUCollection *> *)collections library:(NSArray<YTMUOfflineTrack *> *)library {
+    NSMutableDictionary<NSString *, YTMUCollection *> *byName = [NSMutableDictionary dictionary];
+    for (YTMUCollection *album in collections) {
+        NSString *name = [(album.creator.length ? album.creator : album.artist) stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (!album.isAlbum || name.length == 0)
+            continue;
+        YTMUCollection *artist = byName[name.lowercaseString];
+        if (!artist) {
+            artist = [YTMUCollection new];
+            artist.kind = @"Artist";
+            artist.name = name;
+            byName[name.lowercaseString] = artist;
+        }
+        if (!artist.cover)
+            artist.cover = album.creatorImage;
+        if (!artist.creatorImage)
+            artist.creatorImage = album.creatorImage;
+    }
+
+    for (YTMUCollection *artist in byName.allValues) {
+        // Every song tagged with this artist, from any playlist / album / single download
+        NSMutableArray<YTMUOfflineTrack *> *matches = [NSMutableArray array];
+        NSMutableSet<NSString *> *seen = [NSMutableSet set];
+        for (YTMUOfflineTrack *track in library) {
+            // Song artist tag contains the name ("Yeat, Drake"), or an album of theirs
+            // (playlists use the playlist name as album artist, so that only counts exactly)
+            BOOL byArtist = track.artist.length && [track.artist rangeOfString:artist.name options:NSCaseInsensitiveSearch].location != NSNotFound;
+            BOOL byAlbum = track.albumArtist.length && [track.albumArtist caseInsensitiveCompare:artist.name] == NSOrderedSame;
+            if ((byArtist || byAlbum) && ![seen containsObject:track.url.path]) {
+                [seen addObject:track.url.path];
+                [matches addObject:track];
+            }
+        }
+        artist.files = YTMUSortedByTitle(matches);
+    }
+
+    NSArray *artists = [byName.allValues filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"files.@count > 0"]];
+    return [artists sortedArrayUsingComparator:^NSComparisonResult(YTMUCollection *a, YTMUCollection *b) {
+        return [a.name localizedCaseInsensitiveCompare:b.name];
+    }];
+}
+
++ (NSArray<YTMUCollection *> *)creatorsFromCollections:(NSArray<YTMUCollection *> *)collections {
+    NSMutableDictionary<NSString *, YTMUCollection *> *byName = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSMutableOrderedSet<NSURL *> *> *filesByName = [NSMutableDictionary dictionary];
+    for (YTMUCollection *playlist in collections) {
+        NSString *name = [playlist.creator stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (playlist.isAlbum || name.length == 0)
+            continue;
+        NSString *key = name.lowercaseString;
+        YTMUCollection *creator = byName[key];
+        if (!creator) {
+            creator = [YTMUCollection new];
+            creator.kind = @"Creator";
+            creator.name = name;
+            byName[key] = creator;
+            filesByName[key] = [NSMutableOrderedSet orderedSet];
+        }
+        if (!creator.cover)
+            creator.cover = playlist.creatorImage;
+        if (!creator.creatorImage)
+            creator.creatorImage = playlist.creatorImage;
+        [filesByName[key] addObjectsFromArray:playlist.files];
+    }
+    for (NSString *key in byName)
+        byName[key].files = filesByName[key].array;
+
+    return [byName.allValues sortedArrayUsingComparator:^NSComparisonResult(YTMUCollection *a, YTMUCollection *b) {
+        return [a.name localizedCaseInsensitiveCompare:b.name];
+    }];
+}
+
 - (NSString *)subtitle {
+    // Artists / creators: just how many songs you have of them
+    if (self.kind)
+        return [NSString stringWithFormat:@"%lu %@", (unsigned long)self.files.count, self.files.count == 1 ? @"track" : @"tracks"];
     NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithObject:self.isAlbum ? @"Album" : @"Playlist"];
     NSString *by = self.isAlbum ? self.artist : [self.creator stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (by.length)
@@ -229,21 +377,46 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
 
 #pragma mark - Playlist menu
 
+void YTMUOpenInFiles(NSURL *folder) {
+    NSString *path = [folder.path stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+    NSURL *filesURL = path ? [NSURL URLWithString:[@"shareddocuments://" stringByAppendingString:path]] : nil;
+    if (filesURL)
+        [[UIApplication sharedApplication] openURL:filesURL options:@{} completionHandler:nil];
+}
+
 void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void)) {
     if (!collection || !presenter)
         return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:collection.name
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
+    if (collection.kind) {
+        // Artist / creator: play, shuffle or share everything you have of them
+        for (NSNumber *shuffle in @[@NO, @YES]) {
+            [sheet addAction:[UIAlertAction actionWithTitle:shuffle.boolValue ? @"Shuffle" : @"Play" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                    NSArray<YTMUOfflineTrack *> *tracks = [collection loadTracks];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [[YTMUOfflinePlayer shared] playTracks:tracks startIndex:shuffle.boolValue ? -1 : 0 shuffle:shuffle.boolValue];
+                    });
+                });
+            }]];
+        }
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Share all" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            YTMUShare(collection.files, presenter, source);
+        }]];
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        sheet.popoverPresentationController.sourceView = source;
+        sheet.popoverPresentationController.sourceRect = source.bounds;
+        [presenter presentViewController:sheet animated:YES completion:nil];
+        return;
+    }
     [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         YTMUShare(collection.files, presenter, source);
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Open folder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         // Files app, right inside this playlist's folder
-        NSString *path = [collection.folder.path stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
-        NSURL *filesURL = [NSURL URLWithString:[@"shareddocuments://" stringByAppendingString:path ?: @""]];
-        if (filesURL)
-            [[UIApplication sharedApplication] openURL:filesURL options:@{} completionHandler:nil];
+        YTMUOpenInFiles(collection.folder);
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Delete download" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:collection.name
@@ -314,7 +487,25 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
         [bars addObject:bar];
     }
     self.bars = bars;
+    // iOS drops layer animations in the background: restart them when back
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(restartIfAnimating) name:UIApplicationWillEnterForegroundNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(restartIfAnimating) name:UIApplicationDidBecomeActiveNotification object:nil];
     return self;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)restartIfAnimating {
+    if (self.animating)
+        [self startAnimations];
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if (self.window && self.animating)
+        [self startAnimations];
 }
 
 - (CGSize)intrinsicContentSize {
@@ -377,6 +568,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
 @property (nonatomic, strong) UIButton *menuButton;
+@property (nonatomic, strong) NSURL *artworkURL;
 @end
 
 @implementation YTMUTrackCell
@@ -483,7 +675,18 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
         [parts addObject:YTMUFormatTime(track.duration)];
     self.subtitleLabel.text = [parts componentsJoinedByString:@" • "];
 
-    self.artworkView.image = track.artwork;
+    self.artworkView.image = track.artwork ?: track.thumbnail;
+    self.artworkURL = track.url;
+    if (!self.artworkView.image && track.url) {
+        __weak __typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            [track loadThumbnailIfNeeded];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if ([weakSelf.artworkURL isEqual:track.url] && track.thumbnail)
+                    weakSelf.artworkView.image = track.thumbnail;
+            });
+        });
+    }
     self.equalizerBackground.hidden = !isCurrent;
     [self.equalizer setAnimating:isCurrent && isPlaying];
 }
@@ -565,6 +768,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 
 - (void)configureWithCollection:(YTMUCollection *)collection {
     self.coverView.image = collection.cover;
+    self.coverView.layer.cornerRadius = collection.kind ? 28.0 : 4.0;
     self.titleLabel.text = collection.name;
     self.subtitleLabel.text = collection.subtitle;
 }
@@ -731,6 +935,18 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 
     UIButton *closeButton = YTMUIconButton(@"chevron.down", 22, [UIColor whiteColor]);
     [closeButton addTarget:self action:@selector(close) forControlEvents:UIControlEventTouchUpInside];
+
+    // Vertical ⋮ top right, like YTM
+    UIButton *menuButton = YTMUIconButton(@"ellipsis", 20, [UIColor whiteColor]);
+    menuButton.transform = CGAffineTransformMakeRotation((CGFloat)M_PI_2);
+    [menuButton addTarget:self action:@selector(showMenu:) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:menuButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [menuButton.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
+        [menuButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
+        [menuButton.widthAnchor constraintEqualToConstant:44],
+        [menuButton.heightAnchor constraintEqualToConstant:44]
+    ]];
 
     self.artworkView = [UIImageView new];
     self.artworkView.contentMode = UIViewContentModeScaleAspectFill;
@@ -899,6 +1115,23 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     [[YTMUOfflinePlayer shared] cycleRepeatMode];
 }
 
+- (void)showMenu:(UIButton *)sender {
+    YTMUOfflineTrack *track = [YTMUOfflinePlayer shared].currentTrack;
+    if (!track)
+        return;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:track.title message:track.artist preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        YTMUShare(@[track.url], self, sender);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Open folder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        YTMUOpenInFiles([track.url URLByDeletingLastPathComponent]);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sender;
+    sheet.popoverPresentationController.sourceRect = sender.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
 - (void)close {
     if (self.presentingViewController && !self.isBeingDismissed)
         [self dismissViewControllerAnimated:YES completion:nil];
@@ -1038,11 +1271,8 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 - (void)buildHeader {
     UIView *header = [UIView new];
     // Cover-colored hue at the top, like YTM (also with OLED: only the rest is black)
-    UIImage *backdrop = YTMUBackdropImage(self.collection.cover);
     self.backdrop = [CALayer layer];
-    self.backdrop.contents = (__bridge id)backdrop.CGImage;
-    self.backdrop.contentsGravity = @"resize";
-    self.backdrop.magnificationFilter = @"linear";
+    self.backdrop.backgroundColor = YTMUHueColor(self.collection.cover).CGColor;
     // Fades into the page background
     self.gradient = (CAGradientLayer *)[NSClassFromString(@"CAGradientLayer") layer];
     self.gradient.colors = @[(id)[UIColor blackColor].CGColor, (id)[UIColor clearColor].CGColor];
@@ -1053,7 +1283,7 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     UIImageView *cover = [[UIImageView alloc] initWithImage:self.collection.cover];
     cover.contentMode = UIViewContentModeScaleAspectFill;
     cover.clipsToBounds = YES;
-    cover.layer.cornerRadius = 6.0;
+    cover.layer.cornerRadius = self.collection.kind ? 110.0 : 6.0;
     cover.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.06];
     cover.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -1292,7 +1522,13 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
         NSMutableArray *tracks = [self.tracks mutableCopy];
         [tracks removeObject:track];
         self.tracks = tracks;
-        self.collection.files = [YTMUCollection audioFilesInFolder:self.collection.folder];
+        if (self.collection.folder) {
+            self.collection.files = [YTMUCollection audioFilesInFolder:self.collection.folder];
+        } else {
+            NSMutableArray<NSURL *> *files = [self.collection.files mutableCopy];
+            [files removeObject:track.url];
+            self.collection.files = files;
+        }
         [self.tableView reloadData];
         if (self.onChange)
             self.onChange();

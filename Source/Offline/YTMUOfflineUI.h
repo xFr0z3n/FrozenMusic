@@ -15,17 +15,26 @@
 @property (nonatomic, copy) NSString *details;               // description.txt
 @property (nonatomic, copy) NSString *creator;               // creator.txt
 @property (nonatomic, strong) UIImage *creatorImage;         // creator.png
+@property (nonatomic, copy) NSString *kind;                  // nil = folder, @"Artist" / @"Creator" = built from tags
 
 + (NSArray<NSURL *> *)audioFilesInFolder:(NSURL *)folder;
 // Every subfolder with audio in it. Reads only the first song's tags (fast).
 + (NSArray<YTMUCollection *> *)collectionsInFolder:(NSURL *)root;
 - (NSArray<YTMUOfflineTrack *> *)loadTracks; // reads all songs (slow, off main thread)
-- (NSString *)subtitle;                      // "Album • C418 • 2013 • 30 songs"
+- (NSString *)subtitle;                      // "Album • C418 • 2013 • 30 tracks"
+
+// Every downloaded song (single ones + all folders), tags only, cached by file date. Slow the first time.
++ (NSArray<YTMUOfflineTrack *> *)libraryTracksInFolder:(NSURL *)root collections:(NSArray<YTMUCollection *> *)collections;
+// Album artists (creator.png/.txt of albums) with every song tagged with their name
++ (NSArray<YTMUCollection *> *)artistsFromCollections:(NSArray<YTMUCollection *> *)collections library:(NSArray<YTMUOfflineTrack *> *)library;
+// Playlist creators (creator.png/.txt of playlists) with all songs of their playlists
++ (NSArray<YTMUCollection *> *)creatorsFromCollections:(NSArray<YTMUCollection *> *)collections;
 @end
 
 #pragma mark - Shared helpers
 
 FOUNDATION_EXPORT UIColor *YTMUAverageColor(UIImage *image);
+FOUNDATION_EXPORT UIColor *YTMUHueColor(UIImage *cover); // YTM-like page hue from a cover
 FOUNDATION_EXPORT BOOL YTMUIsOLED(void);               // OLED Dark Theme setting on
 FOUNDATION_EXPORT UIColor *YTMUBackgroundColor(void);  // pure black with OLED
 FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
@@ -69,6 +78,9 @@ FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 @property (nonatomic, copy) void (^onVisibilityChange)(BOOL visible); // also called right when set
 - (void)refresh;
 @end
+
+// Opens a folder in the Files app
+FOUNDATION_EXPORT void YTMUOpenInFiles(NSURL *folder);
 
 // Share / Delete download sheet for a downloaded playlist or album
 FOUNDATION_EXPORT void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void));
