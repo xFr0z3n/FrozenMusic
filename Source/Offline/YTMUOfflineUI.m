@@ -1484,8 +1484,14 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    self.backdrop.frame = self.view.bounds;
+    // Queue open: the hue only covers the player part and fades out smoothly
+    // right above the queue, like the bottom of the closed player
+    CGRect frame = self.view.bounds;
+    if (self.showingQueue && CGRectGetMinY(self.queueView.frame) > 0)
+        frame.size.height = CGRectGetMinY(self.queueView.frame);
+    self.backdrop.frame = frame;
     self.gradient.frame = self.backdrop.bounds;
+    self.gradient.locations = self.showingQueue ? @[@0.1, @1.0] : @[@0.15, @0.75];
 }
 
 - (void)refresh {
