@@ -1,19 +1,89 @@
 #import <MediaPlayer/MediaPlayer.h>
 #import <UIKit/UIKit.h>
 #import <CommonCrypto/CommonCrypto.h>
+#import "Prefs/FrozenDiscordConfig.h"
 
-// Placeholders — substituted by GitHub Actions at build time, never commit real values
+// Build secrets: placeholders substituted by GitHub Actions at build time, never commit real values.
+// Values set in the app (FrozenMusic > Discord RPC) override them one by one.
 // NOTE: semantics changed in this revision:
 //   kNextcloudWebDAVURL  = WebDAV *folder* URL, MUST end with a trailing slash
 //                          e.g. https://cloud.example.com/remote.php/dav/files/USER/discord-art/
 //   kNextcloudPublicURL  = public *folder share* base URL, NO trailing slash
 //                          e.g. https://cloud.example.com/s/AbCdEfGhIjKlmNo
-static NSString * const kDiscordToken       = @"__DISCORD_TOKEN__";
-static NSString * const kDiscordAppID       = @"__DISCORD_APP_ID__";
-static NSString * const kNextcloudWebDAVURL = @"__NEXTCLOUD_WEBDAV_URL__";
-static NSString * const kNextcloudUser      = @"__NEXTCLOUD_USER__";
-static NSString * const kNextcloudPass      = @"__NEXTCLOUD_PASS__";
-static NSString * const kNextcloudPublicURL = @"__NEXTCLOUD_PUBLIC_URL__";
+static NSString * const kBuildDiscordToken       = @"__DISCORD_TOKEN__";
+static NSString * const kBuildDiscordAppID       = @"__DISCORD_APP_ID__";
+static NSString * const kBuildNextcloudWebDAVURL = @"__NEXTCLOUD_WEBDAV_URL__";
+static NSString * const kBuildNextcloudUser      = @"__NEXTCLOUD_USER__";
+static NSString * const kBuildNextcloudPass      = @"__NEXTCLOUD_PASS__";
+static NSString * const kBuildNextcloudPublicURL = @"__NEXTCLOUD_PUBLIC_URL__";
+
+// A placeholder the build didn't fill in (no secret set) counts as empty
+static NSString *YTMUCleanBuildValue(NSString *value) {
+    value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!value.length || ([value hasPrefix:@"__"] && [value hasSuffix:@"__"]))
+        return nil;
+    return value;
+}
+
+NSString *YTMUDiscordBuildValue(NSString *key) {
+    NSDictionary *build = @{
+        FrozenDiscordTokenKey: kBuildDiscordToken,
+        FrozenDiscordAppIDKey: kBuildDiscordAppID,
+        FrozenDiscordWebDAVURLKey: kBuildNextcloudWebDAVURL,
+        FrozenDiscordWebDAVUserKey: kBuildNextcloudUser,
+        FrozenDiscordWebDAVPassKey: kBuildNextcloudPass,
+        FrozenDiscordPublicURLKey: kBuildNextcloudPublicURL
+    };
+    return YTMUCleanBuildValue(build[key]);
+}
+
+// Settings used for this launch (changes apply after a restart)
+static NSDictionary<NSString *, NSString *> *YTMUDiscordSettings(void) {
+    static NSDictionary *settings;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableDictionary *resolved = [NSMutableDictionary dictionary];
+        for (NSString *key in @[FrozenDiscordTokenKey, FrozenDiscordAppIDKey, FrozenDiscordWebDAVURLKey,
+                                FrozenDiscordWebDAVUserKey, FrozenDiscordWebDAVPassKey, FrozenDiscordPublicURLKey]) {
+            NSString *value = FrozenDiscordStoredValue(key) ?: YTMUDiscordBuildValue(key);
+            if (value.length)
+                resolved[key] = value;
+        }
+        // WebDAV folder URL must end with "/", public share link must not
+        NSString *webdav = resolved[FrozenDiscordWebDAVURLKey];
+        if (webdav.length && ![webdav hasSuffix:@"/"])
+            resolved[FrozenDiscordWebDAVURLKey] = [webdav stringByAppendingString:@"/"];
+        NSString *share = resolved[FrozenDiscordPublicURLKey];
+        while ([share hasSuffix:@"/"])
+            share = [share substringToIndex:share.length - 1];
+        if (share.length)
+            resolved[FrozenDiscordPublicURLKey] = share;
+        settings = [resolved copy];
+    });
+    return settings;
+}
+
+#define kDiscordToken       (YTMUDiscordSettings()[FrozenDiscordTokenKey] ?: @"")
+#define kDiscordAppID       (YTMUDiscordSettings()[FrozenDiscordAppIDKey] ?: @"")
+#define kNextcloudWebDAVURL (YTMUDiscordSettings()[FrozenDiscordWebDAVURLKey] ?: @"")
+#define kNextcloudUser      (YTMUDiscordSettings()[FrozenDiscordWebDAVUserKey] ?: @"")
+#define kNextcloudPass      (YTMUDiscordSettings()[FrozenDiscordWebDAVPassKey] ?: @"")
+#define kNextcloudPublicURL (YTMUDiscordSettings()[FrozenDiscordPublicURLKey] ?: @"")
+
+// Status needs a token + app ID; cover art additionally the WebDAV folder and its share link
+static BOOL YTMUDiscordActive(void) {
+    static BOOL active;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        active = FrozenDiscordEnabled() && kDiscordToken.length && kDiscordAppID.length;
+    });
+    return active;
+}
+
+static BOOL YTMUDiscordArtworkReady(void) {
+    return kNextcloudWebDAVURL.length && kNextcloudUser.length && kNextcloudPass.length &&
+           [kNextcloudPublicURL containsString:@"/s/"];
+}
 
 // Asset-key cache (trackKey -> mp: key), persisted across launches
 static NSString * const kAssetCacheDefaultsKey = @"YTMUAssetKeyCache";
@@ -460,7 +530,7 @@ static void YTMURegisterExternalAsset(NSString *imageURL, void (^completion)(NSS
 // Debounced artwork resolution: only fires after the user stops skipping for ~800ms,
 // so flying through tracks doesn't flood Nextcloud + Discord's external-assets endpoint.
 static void YTMUScheduleArtwork(UIImage *artwork, NSString *trackKey) {
-    if (!artwork) return;
+    if (!artwork || !YTMUDiscordArtworkReady()) return;
     gPendingArtwork = artwork;
     NSInteger myToken = ++gArtToken;
 
@@ -498,7 +568,8 @@ static void YTMUScheduleArtwork(UIImage *artwork, NSString *trackKey) {
 
 - (void)setNowPlayingInfo:(NSDictionary *)info {
     %orig;
-    [self ytmu_handleNowPlayingInfo:info];
+    if (YTMUDiscordActive())
+        [self ytmu_handleNowPlayingInfo:info];
 }
 
 %new

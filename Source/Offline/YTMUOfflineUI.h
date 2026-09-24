@@ -45,6 +45,8 @@ FOUNDATION_EXPORT UIColor *YTMUAverageColor(UIImage *image);
 FOUNDATION_EXPORT UIColor *YTMUHueColor(UIImage *cover); // YTM-like page hue from a cover
 FOUNDATION_EXPORT UIImage *YTMUHueImage(UIImage *cover); // 3x1 palette of the cover for the hue
 FOUNDATION_EXPORT BOOL YTMUIsOLED(void);
+FOUNDATION_EXPORT BOOL YTMUAnimations(void);                 // NO with FrozenMusic > Snappy
+FOUNDATION_EXPORT NSTimeInterval YTMUDuration(NSTimeInterval duration); // 0 with Snappy
 FOUNDATION_EXPORT BOOL YTMUPrefEnabled(NSString *key); // a switch in YTMUltimate / FrozenMusic settings               // OLED Dark Theme setting on
 FOUNDATION_EXPORT UIColor *YTMUBackgroundColor(void);  // pure black with OLED
 FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);

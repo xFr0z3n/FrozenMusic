@@ -454,7 +454,7 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
     history.onChange = ^{
         [weakSelf reloadData];
     };
-    [self presentViewController:history animated:YES completion:nil];
+    [self presentViewController:history animated:YTMUAnimations() completion:nil];
 }
 
 - (void)showTopMenu:(UIButton *)sender {
@@ -677,7 +677,7 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
     search.onChange = ^{
         [weakSelf reloadData];
     };
-    [self presentViewController:search animated:YES completion:nil];
+    [self presentViewController:search animated:YTMUAnimations() completion:nil];
 }
 
 - (void)openCollection:(YTMUCollection *)collection {
@@ -692,7 +692,7 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
     page.onChange = ^{
         [weakSelf reloadData];
     };
-    [self presentViewController:page animated:YES completion:nil];
+    [self presentViewController:page animated:YTMUAnimations() completion:nil];
 }
 
 #pragma mark YTM's player
@@ -1051,7 +1051,7 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
             [[YTMUOfflinePlayer shared] playTracks:items startIndex:indexPath.row shuffle:NO];
             YTMUNowPlayingViewController *nowPlaying = [YTMUNowPlayingViewController new];
             nowPlaying.modalPresentationStyle = UIModalPresentationFullScreen;
-            [self presentViewController:nowPlaying animated:YES completion:nil];
+            [self presentViewController:nowPlaying animated:YTMUAnimations() completion:nil];
         } else {
             [self openCollection:item];
         }
@@ -1061,7 +1061,7 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
     if (indexPath.section == YTMUSectionNowPlaying) {
         YTMUNowPlayingViewController *nowPlaying = [YTMUNowPlayingViewController new];
         nowPlaying.modalPresentationStyle = UIModalPresentationFullScreen;
-        [self presentViewController:nowPlaying animated:YES completion:nil];
+        [self presentViewController:nowPlaying animated:YTMUAnimations() completion:nil];
     } else if (indexPath.section == YTMUSectionCollections) {
         [self openCollection:self.collections[(NSUInteger)indexPath.row]];
     } else if (indexPath.section == YTMUSectionSongs) {
@@ -1069,7 +1069,7 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
         [player playTracks:self.songs startIndex:indexPath.row shuffle:NO];
         YTMUNowPlayingViewController *nowPlaying = [YTMUNowPlayingViewController new];
         nowPlaying.modalPresentationStyle = UIModalPresentationFullScreen;
-        [self presentViewController:nowPlaying animated:YES completion:nil];
+        [self presentViewController:nowPlaying animated:YTMUAnimations() completion:nil];
     }
 }
 

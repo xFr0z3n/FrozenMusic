@@ -141,7 +141,7 @@ void YTMURecordHistory(NSURL *url, BOOL isCollection) {
 }
 
 - (void)close {
-    [self dismissViewControllerAnimated:YES completion:nil];
+    [self dismissViewControllerAnimated:YTMUAnimations() completion:nil];
 }
 
 - (void)playerChanged {
@@ -288,7 +288,7 @@ void YTMURecordHistory(NSURL *url, BOOL isCollection) {
         [[YTMUOfflinePlayer shared] playTracks:@[item] startIndex:0 shuffle:NO];
         YTMUNowPlayingViewController *nowPlaying = [YTMUNowPlayingViewController new];
         nowPlaying.modalPresentationStyle = UIModalPresentationFullScreen;
-        [self presentViewController:nowPlaying animated:YES completion:nil];
+        [self presentViewController:nowPlaying animated:YTMUAnimations() completion:nil];
     } else {
         YTMUCollectionViewController *page = [[YTMUCollectionViewController alloc] initWithCollection:item];
         page.modalPresentationStyle = UIModalPresentationFullScreen;
@@ -296,7 +296,7 @@ void YTMURecordHistory(NSURL *url, BOOL isCollection) {
         page.onChange = ^{
             [weakSelf somethingDeleted];
         };
-        [self presentViewController:page animated:YES completion:^{
+        [self presentViewController:page animated:YTMUAnimations() completion:^{
             [weakSelf reload]; // it moved to the top
         }];
     }

@@ -279,7 +279,7 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
 
 - (void)close {
     [self.field resignFirstResponder];
-    [self dismissViewControllerAnimated:YES completion:nil];
+    [self dismissViewControllerAnimated:YTMUAnimations() completion:nil];
 }
 
 - (void)playerChanged {
@@ -530,7 +530,7 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
         [[YTMUOfflinePlayer shared] playTracks:items startIndex:indexPath.row shuffle:NO];
         YTMUNowPlayingViewController *nowPlaying = [YTMUNowPlayingViewController new];
         nowPlaying.modalPresentationStyle = UIModalPresentationFullScreen;
-        [self presentViewController:nowPlaying animated:YES completion:nil];
+        [self presentViewController:nowPlaying animated:YTMUAnimations() completion:nil];
     } else {
         YTMUCollectionViewController *page = [[YTMUCollectionViewController alloc] initWithCollection:item];
         page.modalPresentationStyle = UIModalPresentationFullScreen;
@@ -538,7 +538,7 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
         page.onChange = ^{
             [weakSelf somethingDeleted];
         };
-        [self presentViewController:page animated:YES completion:nil];
+        [self presentViewController:page animated:YTMUAnimations() completion:nil];
     }
 }
 
@@ -647,7 +647,7 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
     overlay.alpha = 0;
     [self.view addSubview:overlay];
     self.confirmOverlay = overlay;
-    [UIView animateWithDuration:0.15 animations:^{
+    [UIView animateWithDuration:YTMUDuration(0.15) animations:^{
         overlay.alpha = 1;
     }];
 }
@@ -655,7 +655,7 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
 - (void)dismissConfirm {
     UIView *overlay = self.confirmOverlay;
     self.confirmOverlay = nil;
-    [UIView animateWithDuration:0.15 animations:^{
+    [UIView animateWithDuration:YTMUDuration(0.15) animations:^{
         overlay.alpha = 0;
     } completion:^(BOOL finished) {
         [overlay removeFromSuperview];

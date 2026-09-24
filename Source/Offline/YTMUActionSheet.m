@@ -394,7 +394,7 @@ static UIImage *YTMUSheetIcon(NSString *symbol, CGFloat size) {
     if (self.shown)
         return;
     self.shown = YES;
-    [UIView animateWithDuration:0.28 delay:0 usingSpringWithDamping:0.95 initialSpringVelocity:0.3 options:0 animations:^{
+    [UIView animateWithDuration:YTMUDuration(0.28) delay:0 usingSpringWithDamping:0.95 initialSpringVelocity:0.3 options:0 animations:^{
         self.dimView.alpha = 1;
         self.sheet.transform = CGAffineTransformIdentity;
     } completion:nil];
@@ -404,7 +404,7 @@ static UIImage *YTMUSheetIcon(NSString *symbol, CGFloat size) {
     if (self.closing)
         return;
     self.closing = YES;
-    [UIView animateWithDuration:0.2 animations:^{
+    [UIView animateWithDuration:YTMUDuration(0.2) animations:^{
         self.dimView.alpha = 0;
         self.sheet.transform = CGAffineTransformMakeTranslation(0, self.sheet.bounds.size.height + 40);
     } completion:^(BOOL finished) {
