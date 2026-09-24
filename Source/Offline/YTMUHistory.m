@@ -310,7 +310,7 @@ void YTMURecordHistory(NSURL *url, BOOL isCollection) {
 
 - (void)showMenuForTrack:(YTMUOfflineTrack *)track from:(UIButton *)sender {
     __weak __typeof(self) weakSelf = self;
-    YTMUSheetAction *remove = [YTMUSheetAction actionWithTitle:@"Remove from history" symbol:@"trash" handler:^{
+    YTMUSheetAction *remove = [YTMUSheetAction actionWithTitle:@"Remove from history" symbol:@"ytmu.trash" handler:^{
         YTMURemoveFromHistory(track.url);
         [weakSelf reload];
     }];
