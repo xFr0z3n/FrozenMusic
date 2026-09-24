@@ -60,6 +60,7 @@ FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 @interface YTMUTrackCell : UITableViewCell
 @property (nonatomic, copy) void (^onMenu)(UIButton *sender); // ⋮ shown only when set
 - (void)setSubtitleText:(NSString *)text; // after configure: custom second line
+@property (nonatomic) BOOL keepsReorderOnRight;   // queue: drag handle stays on the right
 - (void)configureWithTrack:(YTMUOfflineTrack *)track isCurrent:(BOOL)isCurrent isPlaying:(BOOL)isPlaying;
 @end
 
@@ -74,6 +75,8 @@ FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 @interface YTMUCollectionViewController : UIViewController
 - (instancetype)initWithCollection:(YTMUCollection *)collection;
 @property (nonatomic, copy) void (^onChange)(void); // files deleted etc.
+@property (nonatomic) BOOL startsFinding;            // open with "Find in playlist"
+- (void)startFinding;
 @end
 
 // YTM-style Now Playing screen for downloaded songs
@@ -92,5 +95,7 @@ FOUNDATION_EXPORT void YTMUOpenInFiles(NSURL *folder);
 
 // Share / Delete download sheet for a downloaded playlist or album
 FOUNDATION_EXPORT void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void));
+// With "Find in playlist" + "Edit" on top
+FOUNDATION_EXPORT void YTMUShowCollectionMenuFull(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void), void (^onEdit)(void), void (^onFind)(void));
 // Same, with "Edit" on top (reorder the songs)
 FOUNDATION_EXPORT void YTMUShowCollectionMenuWithEdit(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void), void (^onEdit)(void));

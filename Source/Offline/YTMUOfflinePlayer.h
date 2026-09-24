@@ -74,5 +74,13 @@ typedef NS_ENUM(NSInteger, YTMURepeatMode) {
 - (void)seekTo:(NSTimeInterval)time;
 - (void)setShuffled:(BOOL)shuffled;
 - (void)cycleRepeatMode;
-- (void)stop;
+- (void)stop; // also "Dismiss queue": nothing playing, players disappear
+
+// Queue (play order, with shuffle applied)
+@property (nonatomic, copy) NSString *sourceName;  // "Playing from"
+- (NSArray<YTMUOfflineTrack *> *)queue;
+- (NSInteger)queuePosition;                         // current song's place in the queue
+- (void)playQueueIndex:(NSInteger)index;
+- (void)moveQueueItemFrom:(NSInteger)from to:(NSInteger)to;
+- (void)addToQueue:(YTMUOfflineTrack *)track;       // once more, at the end
 @end

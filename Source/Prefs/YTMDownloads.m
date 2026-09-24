@@ -162,6 +162,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    if (self.view.window)
+        [self layoutTopBar:YES];
     [self reloadData]; // playlist downloads may have finished meanwhile
     [self.miniPlayer refresh];
     // Hide before anything is drawn (coming back from a playlist or another tab)
@@ -178,8 +180,12 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    // Leaving the tab: YTM's logo comes back right away (the timer shows ours again if we stay)
-    [self layoutTopBar:NO];
+    // Leaving the tab: YTM's logo comes back right away. Our own pages (player,
+    // playlist, search...) cover everything, so the bar just stays for them.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (![self ytmu_ownScreenOnTop])
+            [self layoutTopBar:NO];
+    });
     // Our own playlist page / Now Playing slides over: keep YTM's player hidden
     dispatch_async(dispatch_get_main_queue(), ^{
         [self syncAppPlayer];
@@ -217,13 +223,17 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 #pragma mark Top bar ("Downloads" instead of YTM's logo)
 
 - (UIButton *)topBarButton:(NSString *)symbol action:(SEL)action {
+    return [self topBarButton:symbol action:action width:44];
+}
+
+- (UIButton *)topBarButton:(NSString *)symbol action:(SEL)action width:(CGFloat)width {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:19 weight:UIImageSymbolWeightRegular];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightRegular];
     [button setImage:[UIImage systemImageNamed:symbol withConfiguration:config] forState:UIControlStateNormal];
     button.tintColor = [UIColor whiteColor];
     button.translatesAutoresizingMaskIntoConstraints = NO;
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    [button.widthAnchor constraintEqualToConstant:40].active = YES;
+    [button.widthAnchor constraintEqualToConstant:width].active = YES;
     [button.heightAnchor constraintEqualToConstant:40].active = YES;
     return button;
 }
@@ -238,22 +248,32 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     self.topBarNormal.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     UILabel *title = [UILabel new];
     title.text = @"Downloads";
-    title.font = [UIFont systemFontOfSize:26 weight:UIFontWeightBold];
+    title.font = [UIFont systemFontOfSize:25 weight:UIFontWeightSemibold];
     title.textColor = [UIColor whiteColor];
     title.translatesAutoresizingMaskIntoConstraints = NO;
     UIButton *history = [self topBarButton:@"clock.arrow.circlepath" action:@selector(openHistory)];
     UIButton *search = [self topBarButton:@"magnifyingglass" action:@selector(openSearch)];
-    UIButton *more = [self topBarButton:@"ellipsis" action:@selector(showTopMenu:)];
-    more.transform = CGAffineTransformMakeRotation((CGFloat)M_PI_2);
+    UIButton *more = [self topBarButton:@"ellipsis" action:@selector(showTopMenu:) width:26];
+    // Vertical ⋮ drawn upright (a rotated button would keep its wide frame)
+    UIImage *dots = [more imageForState:UIControlStateNormal];
+    if (dots) {
+        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(dots.size.height, dots.size.width)];
+        UIImage *vertical = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+            CGContextTranslateCTM(context.CGContext, dots.size.height / 2.0, dots.size.width / 2.0);
+            CGContextRotateCTM(context.CGContext, (CGFloat)M_PI_2);
+            [dots drawInRect:CGRectMake(-dots.size.width / 2.0, -dots.size.height / 2.0, dots.size.width, dots.size.height)];
+        }];
+        [more setImage:[vertical imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate] forState:UIControlStateNormal];
+    }
     UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[history, search, more]];
-    buttons.spacing = 2;
+    buttons.spacing = 4;
     buttons.translatesAutoresizingMaskIntoConstraints = NO;
     [self.topBarNormal addSubview:title];
     [self.topBarNormal addSubview:buttons];
     [NSLayoutConstraint activateConstraints:@[
         [title.leadingAnchor constraintEqualToAnchor:self.topBarNormal.leadingAnchor constant:16],
         [title.centerYAnchor constraintEqualToAnchor:self.topBarNormal.centerYAnchor],
-        [buttons.trailingAnchor constraintEqualToAnchor:self.topBarNormal.trailingAnchor constant:-2],
+        [buttons.trailingAnchor constraintEqualToAnchor:self.topBarNormal.trailingAnchor],
         [buttons.centerYAnchor constraintEqualToAnchor:self.topBarNormal.centerYAnchor]
     ]];
 
@@ -318,8 +338,9 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     // Same height as YTM's bar, leaving its avatar (right) visible
     CGRect hostInWindow = [host convertRect:host.bounds toView:nil];
     CGFloat barHeight = host == self.view ? 52 : MAX(44, MIN(70, CGRectGetMaxY(hostInWindow) - safeTop));
-    CGRect frameInWindow = CGRectMake(0, safeTop, host == self.view ? width : width - 62, barHeight);
+    CGRect frameInWindow = CGRectMake(0, safeTop, host == self.view ? width : width - 50, barHeight);
     self.topBar.frame = [host convertRect:frameInWindow fromView:nil];
+    self.topBar.backgroundColor = [self barColorOf:host];
     self.topBar.hidden = NO;
 
     // List starts right below the bar
@@ -333,6 +354,17 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
         if (atTop)
             self.tableView.contentOffset = CGPointMake(0, -inset);
     }
+}
+
+// YTM's bar color (so no darker box shows around our part)
+- (UIColor *)barColorOf:(UIView *)host {
+    for (UIView *view = host; view && view != self.view; view = view.superview) {
+        UIColor *color = view.backgroundColor;
+        CGFloat red = 0, green = 0, blue = 0, alpha = 0;
+        if (color && [color getRed:&red green:&green blue:&blue alpha:&alpha] && alpha > 0.9)
+            return color;
+    }
+    return YTMUBackgroundColor();
 }
 
 - (void)openHistory {
@@ -368,8 +400,18 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     self.topBarEditing.hidden = NO;
     self.chipBar.userInteractionEnabled = NO;
     self.chipBar.alpha = 0.4;
-    [self.tableView reloadData];
-    [self.tableView setEditing:YES animated:YES];
+    [self setTableEditingKeepingPosition:YES];
+}
+
+// Switching edit mode must not move the list
+- (void)setTableEditingKeepingPosition:(BOOL)editing {
+    CGPoint offset = self.tableView.contentOffset;
+    [UIView performWithoutAnimation:^{
+        [self.tableView setEditing:editing animated:NO];
+        [self.tableView reloadData];
+        [self.tableView layoutIfNeeded];
+        self.tableView.contentOffset = offset;
+    }];
 }
 
 - (void)stopEditingOrder {
@@ -378,7 +420,7 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     self.topBarEditing.hidden = YES;
     self.chipBar.userInteractionEnabled = YES;
     self.chipBar.alpha = 1.0;
-    [self.tableView setEditing:NO animated:YES];
+    [self setTableEditingKeepingPosition:NO];
 }
 
 - (void)cancelEditingOrder {
@@ -561,7 +603,12 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 }
 
 - (void)openCollection:(YTMUCollection *)collection {
+    [self openCollection:collection finding:NO];
+}
+
+- (void)openCollection:(YTMUCollection *)collection finding:(BOOL)finding {
     YTMUCollectionViewController *page = [[YTMUCollectionViewController alloc] initWithCollection:collection];
+    page.startsFinding = finding;
     page.modalPresentationStyle = UIModalPresentationFullScreen;
     __weak __typeof(self) weakSelf = self;
     page.onChange = ^{
@@ -604,7 +651,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 // Runs every 0.25 s while this tab exists: YTM's player hidden exactly while we're visible
 - (void)syncAppPlayer {
-    [self layoutTopBar:[self ytmu_isOnScreen]];
+    BOOL ownPageOnTop = !self.topBar.hidden && [self ytmu_ownScreenOnTop];
+    [self layoutTopBar:[self ytmu_isOnScreen] || ownPageOnTop];
     if (!self.keepAppPlayer && ([self ytmu_isOnScreen] || (self.hiddenAppPlayerViews.count && [self ytmu_ownScreenOnTop])))
         [self hideAppPlayerForced:NO];
     else
@@ -840,8 +888,10 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
         YTMUCollectionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"collection" forIndexPath:indexPath];
         [cell configureWithCollection:collection];
         cell.onMenu = ^(UIButton *sender) {
-            YTMUShowCollectionMenu(collection, weakSelf, sender, ^{
+            YTMUShowCollectionMenuFull(collection, weakSelf, sender, ^{
                 [weakSelf reloadData];
+            }, nil, collection.kind ? nil : ^{
+                [weakSelf openCollection:collection finding:YES];
             });
         };
         return cell;
@@ -859,8 +909,10 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
         YTMUCollection *collection = self.collections[(NSUInteger)indexPath.row];
         [cell configureWithCollection:collection];
         cell.onMenu = ^(UIButton *sender) {
-            YTMUShowCollectionMenu(collection, weakSelf, sender, ^{
+            YTMUShowCollectionMenuFull(collection, weakSelf, sender, ^{
                 [weakSelf reloadData];
+            }, nil, collection.kind ? nil : ^{
+                [weakSelf openCollection:collection finding:YES];
             });
         };
         return cell;
@@ -920,6 +972,9 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 - (void)showMenuForSong:(YTMUOfflineTrack *)track from:(UIButton *)sender {
     NSURL *pngURL = [[track.url URLByDeletingPathExtension] URLByAppendingPathExtension:@"png"];
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:track.title message:track.artist preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Add to queue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [[YTMUOfflinePlayer shared] addToQueue:track];
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         [self shareItems:@[track.url] from:sender];
     }]];
