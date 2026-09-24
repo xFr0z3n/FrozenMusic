@@ -601,7 +601,7 @@ void YTMUShowCollectionMenuFull(YTMUCollection *collection, UIViewController *pr
     [parts addObject:[NSString stringWithFormat:@"%lu %@", (unsigned long)collection.files.count, collection.files.count == 1 ? @"track" : @"tracks"]];
     YTMUActionSheet *sheet = [YTMUActionSheet sheetWithTitle:collection.name subtitle:[parts componentsJoinedByString:@" • "]];
 
-    [sheet addTile:[YTMUSheetAction actionWithTitle:@"Play next" symbol:@"text.line.first.and.arrowtriangle.forward" handler:^{
+    [sheet addTile:[YTMUSheetAction actionWithTitle:@"Play next" symbol:@"ytmu.playnext" handler:^{
         YTMUWithTracks(collection, ^(NSArray<YTMUOfflineTrack *> *tracks) {
             [[YTMUOfflinePlayer shared] playNext:tracks];
         });
@@ -628,7 +628,7 @@ void YTMUShowCollectionMenuFull(YTMUCollection *collection, UIViewController *pr
         [sheet addAction:[YTMUSheetAction actionWithTitle:@"Edit" symbol:@"line.3.horizontal.decrease" handler:onEdit]];
     if (onFind)
         [sheet addAction:[YTMUSheetAction actionWithTitle:collection.isAlbum ? @"Find in album" : @"Find in playlist" symbol:@"magnifyingglass" handler:onFind]];
-    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Add to queue" symbol:@"text.line.last.and.arrowtriangle.forward" handler:^{
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Add to queue" symbol:@"ytmu.addqueue" handler:^{
         YTMUWithTracks(collection, ^(NSArray<YTMUOfflineTrack *> *tracks) {
             [[YTMUOfflinePlayer shared] addTracksToQueue:tracks];
         });
@@ -638,7 +638,7 @@ void YTMUShowCollectionMenuFull(YTMUCollection *collection, UIViewController *pr
         [sheet addAction:[YTMUSheetAction actionWithTitle:@"Open folder" symbol:@"folder" handler:^{
             YTMUOpenInFiles(collection.folder);
         }]];
-        [sheet addAction:[YTMUSheetAction actionWithTitle:@"Delete download" symbol:@"trash" handler:^{
+        [sheet addAction:[YTMUSheetAction actionWithTitle:@"Delete download" symbol:@"ytmu.trash" handler:^{
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:collection.name
                                                                            message:collection.isAlbum ? @"Delete all downloaded songs of this album?" : @"Delete all downloaded songs of this playlist?"
                                                                     preferredStyle:UIAlertControllerStyleAlert];
@@ -667,18 +667,18 @@ void YTMUShowSongMenu(YTMUOfflineTrack *track, UIViewController *presenter, NSAr
         [parts addObject:YTMUFormatTime(track.duration)];
     YTMUActionSheet *sheet = [YTMUActionSheet sheetWithTitle:track.title subtitle:[parts componentsJoinedByString:@" • "]];
 
-    [sheet addTile:[YTMUSheetAction actionWithTitle:@"Play next" symbol:@"text.line.first.and.arrowtriangle.forward" handler:^{
+    [sheet addTile:[YTMUSheetAction actionWithTitle:@"Play next" symbol:@"ytmu.playnext" handler:^{
         [[YTMUOfflinePlayer shared] playNext:@[track]];
     }]];
     [sheet addTile:[YTMUSheetAction actionWithTitle:@"Share" symbol:@"arrowshape.turn.up.right" handler:^{
         YTMUShare(@[track.url], YTMUTopPresenter(presenter), nil);
     }]];
 
-    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Add to queue" symbol:@"text.line.last.and.arrowtriangle.forward" handler:^{
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Add to queue" symbol:@"ytmu.addqueue" handler:^{
         [[YTMUOfflinePlayer shared] addToQueue:track];
     }]];
     // Downloaded album of this song, if there is one
-    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Go to album" symbol:@"opticaldisc" handler:^{
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Go to album" symbol:@"ytmu.album" handler:^{
         NSString *albumName = track.album;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             YTMUCollection *found = nil;
@@ -697,7 +697,7 @@ void YTMUShowSongMenu(YTMUOfflineTrack *track, UIViewController *presenter, NSAr
         });
     }]];
     // Artist page (an artist with a downloaded album)
-    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Go to artist" symbol:@"person" handler:^{
+    [sheet addAction:[YTMUSheetAction actionWithTitle:@"Go to artist" symbol:@"ytmu.artist" handler:^{
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             NSArray<YTMUCollection *> *collections = [YTMUCollection collectionsInFolder:YTMURootFolder()];
             NSArray<YTMUOfflineTrack *> *library = [YTMUCollection libraryTracksInFolder:YTMURootFolder() collections:collections];
@@ -724,7 +724,7 @@ void YTMUShowSongMenu(YTMUOfflineTrack *track, UIViewController *presenter, NSAr
     for (YTMUSheetAction *action in extraActions)
         [sheet addAction:action];
     if (onDelete)
-        [sheet addAction:[YTMUSheetAction actionWithTitle:@"Delete download" symbol:@"trash" handler:onDelete]];
+        [sheet addAction:[YTMUSheetAction actionWithTitle:@"Delete download" symbol:@"ytmu.trash" handler:onDelete]];
     [sheet presentFrom:presenter];
 }
 
@@ -1538,7 +1538,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     if (!track)
         return;
     // Stops everything: players disappear like nothing was played yet
-    YTMUSheetAction *dismiss = [YTMUSheetAction actionWithTitle:@"Dismiss queue" symbol:@"text.badge.xmark" handler:^{
+    YTMUSheetAction *dismiss = [YTMUSheetAction actionWithTitle:@"Dismiss queue" symbol:@"ytmu.dismissqueue" handler:^{
         [[YTMUOfflinePlayer shared] stop];
     }];
     YTMUShowSongMenu(track, self, @[dismiss], nil);

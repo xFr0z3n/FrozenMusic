@@ -17,9 +17,112 @@ static UIColor *YTMUSheetBackground(void) {
     return YTMUIsOLED() ? [UIColor blackColor] : [UIColor colorWithRed:0.13 green:0.13 blue:0.13 alpha:1.0];
 }
 
+// YTM's own icons (drawn, SF Symbols look different): 24x24 grid, 2pt round strokes
+static UIImage *YTMUDrawnIcon(NSString *name, CGFloat size) {
+    CGFloat side = size + 4;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side)];
+    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextRef cg = context.CGContext;
+        CGContextScaleCTM(cg, side / 24.0, side / 24.0);
+        [[UIColor whiteColor] setStroke];
+        [[UIColor whiteColor] setFill];
+        UIBezierPath *path = [UIBezierPath bezierPath];
+        path.lineWidth = 1.9;
+        path.lineCapStyle = kCGLineCapRound;
+        path.lineJoinStyle = kCGLineJoinRound;
+
+        if ([name isEqualToString:@"ytmu.playnext"] || [name isEqualToString:@"ytmu.addqueue"]) {
+            // Arrow into the list: top (play next) or bottom (add to queue)
+            BOOL top = [name isEqualToString:@"ytmu.playnext"];
+            CGFloat arrowY = top ? 7.0 : 17.0;
+            CGFloat stemEnd = top ? 18.0 : 6.0;
+            [path moveToPoint:CGPointMake(5, stemEnd)];
+            [path addLineToPoint:CGPointMake(5, arrowY)];
+            [path addLineToPoint:CGPointMake(8, arrowY)];
+            // Short line next to the arrow, long ones for the rest of the list
+            [path moveToPoint:CGPointMake(15, arrowY)];
+            [path addLineToPoint:CGPointMake(20, arrowY)];
+            CGFloat lineA = top ? 12.0 : 7.0, lineB = top ? 17.0 : 12.0;
+            [path moveToPoint:CGPointMake(10, lineA)];
+            [path addLineToPoint:CGPointMake(20, lineA)];
+            [path moveToPoint:CGPointMake(10, lineB)];
+            [path addLineToPoint:CGPointMake(20, lineB)];
+            [path stroke];
+            UIBezierPath *arrow = [UIBezierPath bezierPath];
+            [arrow moveToPoint:CGPointMake(8, arrowY - 3.2)];
+            [arrow addLineToPoint:CGPointMake(12.8, arrowY)];
+            [arrow addLineToPoint:CGPointMake(8, arrowY + 3.2)];
+            [arrow closePath];
+            [arrow fill];
+        } else if ([name isEqualToString:@"ytmu.artist"]) {
+            // Person with a music note
+            [path appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(5.5, 3, 7, 7)]];
+            [path moveToPoint:CGPointMake(3, 20.5)];
+            [path addCurveToPoint:CGPointMake(14.5, 14.2) controlPoint1:CGPointMake(3.2, 16.2) controlPoint2:CGPointMake(9.5, 12.5)];
+            [path stroke];
+            UIBezierPath *note = [UIBezierPath bezierPath];
+            note.lineWidth = 1.9;
+            note.lineCapStyle = kCGLineCapRound;
+            note.lineJoinStyle = kCGLineJoinRound;
+            [note appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(13.2, 16.8, 4, 4)]];
+            [note moveToPoint:CGPointMake(17.2, 18.8)];
+            [note addLineToPoint:CGPointMake(17.2, 12)];
+            [note addLineToPoint:CGPointMake(20.5, 13.8)];
+            [note stroke];
+        } else if ([name isEqualToString:@"ytmu.dismissqueue"]) {
+            // List with an X
+            [path moveToPoint:CGPointMake(4, 6)];
+            [path addLineToPoint:CGPointMake(20, 6)];
+            [path moveToPoint:CGPointMake(4, 11)];
+            [path addLineToPoint:CGPointMake(20, 11)];
+            [path moveToPoint:CGPointMake(4, 16)];
+            [path addLineToPoint:CGPointMake(13, 16)];
+            [path moveToPoint:CGPointMake(16, 15)];
+            [path addLineToPoint:CGPointMake(20, 19)];
+            [path moveToPoint:CGPointMake(20, 15)];
+            [path addLineToPoint:CGPointMake(16, 19)];
+            [path stroke];
+        } else if ([name isEqualToString:@"ytmu.trash"]) {
+            // Bin with lid, handle and two lines
+            [path moveToPoint:CGPointMake(4.5, 6)];
+            [path addLineToPoint:CGPointMake(19.5, 6)];
+            [path moveToPoint:CGPointMake(9.5, 6)];
+            [path addLineToPoint:CGPointMake(9.5, 3.8)];
+            [path addLineToPoint:CGPointMake(14.5, 3.8)];
+            [path addLineToPoint:CGPointMake(14.5, 6)];
+            [path moveToPoint:CGPointMake(6.2, 6)];
+            [path addLineToPoint:CGPointMake(6.8, 18.5)];
+            [path addQuadCurveToPoint:CGPointMake(9, 20.6) controlPoint:CGPointMake(6.9, 20.6)];
+            [path addLineToPoint:CGPointMake(15, 20.6)];
+            [path addQuadCurveToPoint:CGPointMake(17.2, 18.5) controlPoint:CGPointMake(17.1, 20.6)];
+            [path addLineToPoint:CGPointMake(17.8, 6)];
+            [path moveToPoint:CGPointMake(10.2, 10)];
+            [path addLineToPoint:CGPointMake(10.2, 16.5)];
+            [path moveToPoint:CGPointMake(13.8, 10)];
+            [path addLineToPoint:CGPointMake(13.8, 16.5)];
+            [path stroke];
+        } else if ([name isEqualToString:@"ytmu.album"]) {
+            // Record: ring, center hole and two groove arcs
+            [path appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(3, 3, 18, 18)]];
+            [path appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(10.2, 10.2, 3.6, 3.6)]];
+            [path stroke];
+            UIBezierPath *grooves = [UIBezierPath bezierPath];
+            grooves.lineWidth = 1.6;
+            grooves.lineCapStyle = kCGLineCapRound;
+            [grooves addArcWithCenter:CGPointMake(12, 12) radius:5.2 startAngle:(CGFloat)(M_PI * 1.05) endAngle:(CGFloat)(M_PI * 1.45) clockwise:YES];
+            [grooves moveToPoint:CGPointMake(12 + 5.2 * cos(M_PI * 0.05), 12 + 5.2 * sin(M_PI * 0.05))];
+            [grooves addArcWithCenter:CGPointMake(12, 12) radius:5.2 startAngle:(CGFloat)(M_PI * 0.05) endAngle:(CGFloat)(M_PI * 0.45) clockwise:YES];
+            [grooves stroke];
+        }
+    }];
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+}
+
 static UIImage *YTMUSheetIcon(NSString *symbol, CGFloat size) {
     if (!symbol.length)
         return nil;
+    if ([symbol hasPrefix:@"ytmu."])
+        return YTMUDrawnIcon(symbol, size);
     UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:size weight:UIImageSymbolWeightRegular];
     return [UIImage systemImageNamed:symbol withConfiguration:config];
 }

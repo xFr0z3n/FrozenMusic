@@ -310,9 +310,11 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 // YTM's own top bar (logo + avatar) sits above this tab: find it and put ours inside
 - (UIView *)appTopBarInWindow:(UIWindow *)window {
     CGFloat safeTop = window.safeAreaInsets.top;
+    // Look only inside YTM's own screen: menus / players we open on top must not hide the bar from us
+    UIView *root = window.rootViewController.view ?: window;
     BOOL wasHidden = self.topBar.hidden;
     self.topBar.hidden = YES; // don't find ourselves
-    UIView *hit = [window hitTest:CGPointMake(60, safeTop + 22) withEvent:nil];
+    UIView *hit = [root hitTest:[root convertPoint:CGPointMake(60, safeTop + 22) fromView:nil] withEvent:nil];
     self.topBar.hidden = wasHidden;
     for (UIView *view = hit; view && view != window; view = view.superview) {
         if (view == self.view || [view isDescendantOfView:self.view])
@@ -333,7 +335,9 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     CGFloat safeTop = window.safeAreaInsets.top;
     CGFloat width = window.bounds.size.width;
     // YTM can rebuild its bar (e.g. after full-screen pages): find it every time
-    UIView *host = [self appTopBarInWindow:window] ?: self.view;
+    UIView *host = [self appTopBarInWindow:window];
+    if (!host) // keep the bar we already sit in, if it's still there
+        host = (self.topBar.superview && self.topBar.superview != self.view && self.topBar.superview.window) ? self.topBar.superview : self.view;
     if (self.topBar.superview != host)
         [host addSubview:self.topBar];
     [host bringSubviewToFront:self.topBar];
