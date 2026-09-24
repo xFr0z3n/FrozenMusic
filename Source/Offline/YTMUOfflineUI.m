@@ -36,6 +36,11 @@ BOOL YTMUIsOLED(void) {
     return [prefs[@"YTMUltimateIsEnabled"] boolValue] && [prefs[@"oledTheme"] boolValue];
 }
 
+BOOL YTMUPrefEnabled(NSString *key) {
+    NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"YTMUltimate"];
+    return [prefs[key] boolValue];
+}
+
 UIColor *YTMUBackgroundColor(void) {
     return YTMUIsOLED() ? [UIColor blackColor] : [UIColor colorWithRed:3 / 255.0 green:3 / 255.0 blue:3 / 255.0 alpha:1.0];
 }
@@ -58,11 +63,6 @@ static UIColor *YTMUPureWhite(void) {
         CGColorSpaceRelease(space);
     });
     return white;
-}
-
-// Top color of the Now Playing gradient (none with OLED)
-static UIColor *YTMUGradientTop(UIImage *artwork) {
-    return YTMUIsOLED() ? [UIColor blackColor] : YTMUAverageColor(artwork);
 }
 
 static UIColor *YTMUSecondaryText(void) {
@@ -232,14 +232,6 @@ UIImage *YTMUHueImage(UIImage *cover) {
             UIRectFill(CGRectMake(slot, 0, 1, 1));
         }
     }];
-}
-
-// Vertical gradient layer (class looked up at runtime, no extra linking)
-static CAGradientLayer *YTMUGradientLayer(UIColor *top) {
-    CAGradientLayer *gradient = (CAGradientLayer *)[NSClassFromString(@"CAGradientLayer") layer];
-    gradient.colors = @[(id)top.CGColor, (id)YTMUBackground().CGColor];
-    gradient.locations = @[@0.0, @1.0];
-    return gradient;
 }
 
 static UIButton *YTMUIconButton(NSString *symbol, CGFloat pointSize, UIColor *tint) {
@@ -902,6 +894,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 @property (nonatomic, strong) UILabel *subtitleLabel;
 @property (nonatomic, strong) UIButton *menuButton;
 @property (nonatomic, strong) NSURL *artworkURL;
+@property (nonatomic, strong) UILabel *numberLabel;
 @end
 
 @implementation YTMUTrackCell
@@ -946,11 +939,21 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     self.menuButton.hidden = YES;
     [self.menuButton addTarget:self action:@selector(menuTapped:) forControlEvents:UIControlEventTouchUpInside];
 
+    // Original YTM album look: track number where the cover would be
+    self.numberLabel = YTMULabel([UIFont systemFontOfSize:16 weight:UIFontWeightMedium], YTMUSecondaryText());
+    self.numberLabel.textAlignment = NSTextAlignmentCenter;
+    self.numberLabel.hidden = YES;
+
     [self.contentView addSubview:self.artworkView];
+    [self.contentView addSubview:self.numberLabel];
     [self.contentView addSubview:self.equalizerBackground];
     [self.equalizerBackground addSubview:self.equalizer];
     [self.contentView addSubview:texts];
     [self.contentView addSubview:self.menuButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.numberLabel.centerXAnchor constraintEqualToAnchor:self.artworkView.centerXAnchor],
+        [self.numberLabel.centerYAnchor constraintEqualToAnchor:self.artworkView.centerYAnchor]
+    ]];
 
     [NSLayoutConstraint activateConstraints:@[
         [self.artworkView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
@@ -1005,6 +1008,16 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 - (void)prepareForReuse {
     [super prepareForReuse];
     self.onMenu = nil;
+    [self setTrackNumber:0];
+}
+
+- (void)setTrackNumber:(NSInteger)number {
+    BOOL numbered = number > 0;
+    self.artworkView.hidden = numbered;
+    self.numberLabel.text = numbered ? [NSString stringWithFormat:@"%ld", (long)number] : nil;
+    // The playing song shows the bars instead of its number
+    self.numberLabel.hidden = !numbered || !self.equalizerBackground.hidden;
+    self.equalizerBackground.backgroundColor = numbered ? [UIColor clearColor] : [UIColor colorWithWhite:0.0 alpha:0.45];
 }
 
 - (void)menuTapped:(UIButton *)sender {
@@ -1165,6 +1178,9 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 
     self.titleLabel = YTMULabel([UIFont systemFontOfSize:15 weight:UIFontWeightSemibold], [UIColor whiteColor]);
     self.artistLabel = YTMULabel([UIFont systemFontOfSize:13], YTMUSecondaryText());
+    // Long text is simply cut at the edge like YTM's mini player (no "…")
+    self.titleLabel.lineBreakMode = NSLineBreakByClipping;
+    self.artistLabel.lineBreakMode = NSLineBreakByClipping;
 
     self.playButton = YTMUIconButton(@"play.fill", 18, [UIColor whiteColor]);
     self.nextButton = YTMUIconButton(@"forward.end.fill", 17, [UIColor whiteColor]);
@@ -1192,7 +1208,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 
         [texts.leadingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor constant:12],
         [texts.centerYAnchor constraintEqualToAnchor:self.artworkView.centerYAnchor],
-        [texts.trailingAnchor constraintLessThanOrEqualToAnchor:self.nextButton.leadingAnchor constant:-10],
+        [texts.trailingAnchor constraintLessThanOrEqualToAnchor:self.nextButton.leadingAnchor constant:-2],
 
         [self.playButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-16],
         [self.playButton.centerYAnchor constraintEqualToAnchor:self.artworkView.centerYAnchor],
@@ -1263,6 +1279,8 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 
 @interface YTMUNowPlayingViewController () <UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, strong) CAGradientLayer *gradient;
+@property (nonatomic, strong) CALayer *backdrop;
+@property (nonatomic, weak) UIImage *hueArtwork;
 @property (nonatomic, strong) UIImageView *artworkView;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *artistLabel;
@@ -1299,8 +1317,15 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     [super viewDidLoad];
     self.view.backgroundColor = YTMUBackground();
 
-    self.gradient = YTMUGradientLayer(YTMUIsOLED() ? [UIColor blackColor] : [UIColor colorWithWhite:0.18 alpha:1.0]);
-    [self.view.layer insertSublayer:self.gradient atIndex:0];
+    // Cover palette hue like playlist / album pages (OLED: black unless enabled in FrozenMusic)
+    self.backdrop = [CALayer layer];
+    self.backdrop.contentsGravity = @"resize";
+    self.backdrop.magnificationFilter = @"linear";
+    self.gradient = (CAGradientLayer *)[NSClassFromString(@"CAGradientLayer") layer];
+    self.gradient.colors = @[(id)[UIColor blackColor].CGColor, (id)[UIColor clearColor].CGColor];
+    self.gradient.locations = @[@0.15, @0.75];
+    self.backdrop.mask = self.gradient;
+    [self.view.layer insertSublayer:self.backdrop atIndex:0];
 
     UIButton *closeButton = YTMUIconButton(@"chevron.down", 22, [UIColor whiteColor]);
     [closeButton addTarget:self action:@selector(close) forControlEvents:UIControlEventTouchUpInside];
@@ -1459,7 +1484,8 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    self.gradient.frame = self.view.bounds;
+    self.backdrop.frame = self.view.bounds;
+    self.gradient.frame = self.backdrop.bounds;
 }
 
 - (void)refresh {
@@ -1475,7 +1501,12 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     self.artistLabel.text = track.artist;
     self.upNextLabel.text = track.title;
     [self reloadQueue];
-    self.gradient.colors = @[(id)YTMUGradientTop(track.artwork).CGColor, (id)YTMUBackground().CGColor];
+    BOOL showHue = !YTMUIsOLED() || YTMUPrefEnabled(@"frozenOledPlayerHue");
+    if (showHue && track.artwork != self.hueArtwork) {
+        self.hueArtwork = track.artwork;
+        self.backdrop.contents = (__bridge id)YTMUHueImage(track.artwork).CGImage;
+    }
+    self.backdrop.hidden = !showHue;
 
     UIImageSymbolConfiguration *playConfig = [UIImageSymbolConfiguration configurationWithPointSize:32 weight:UIImageSymbolWeightSemibold];
     [self.playButton setImage:[UIImage systemImageNamed:player.isPlaying ? @"pause.fill" : @"play.fill" withConfiguration:playConfig] forState:UIControlStateNormal];
@@ -2278,6 +2309,8 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
     BOOL isCurrent = [player.currentTrack.url isEqual:track.url];
     [cell configureWithTrack:track isCurrent:isCurrent isPlaying:player.isPlaying];
+    BOOL numbered = self.collection.isAlbum && YTMUPrefEnabled(@"frozenAlbumLook");
+    [cell setTrackNumber:numbered ? (track.number > 0 ? track.number : indexPath.row + 1) : 0];
     __weak __typeof(self) weakSelf = self;
     cell.onMenu = ^(UIButton *sender) {
         [weakSelf showMenuForTrack:track from:sender];

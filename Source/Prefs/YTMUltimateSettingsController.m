@@ -46,17 +46,17 @@
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 4;
+    return 5;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section == 3 ? LOC(@"LINKS") : nil;
+    return section == 4 ? LOC(@"LINKS") : nil;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) {
         return LOC(@"RESTART_FOOTER");
-    } if (section == 3) {
+    } if (section == 4) {
         NSDictionary *infoDictionary = [[NSBundle mainBundle] infoDictionary];
         NSString *appVersion = infoDictionary[@"CFBundleShortVersionString"];
         return [NSString stringWithFormat:@"\nYouTubeMusic: v%@\nYTMusicUltimate: v%@", appVersion, @(OS_STRINGIFY(TWEAK_VERSION))];
@@ -66,7 +66,7 @@
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
-    if (section == 3) {
+    if (section == 4) {
         UITableViewHeaderFooterView *footer = (UITableViewHeaderFooterView *)view;
         footer.textLabel.textAlignment = NSTextAlignmentCenter;
     }
@@ -76,11 +76,13 @@
     switch (section) {
         case 0:
             return 1;
-        case 1:
-            return 5;
-        case 2:
+        case 1: // FrozenMusic
             return 1;
+        case 2:
+            return 5;
         case 3:
+            return 1;
+        case 4:
             return 4;
         default:
             return 0;
@@ -120,6 +122,20 @@
     }
 
     if (indexPath.section == 1) {
+        // FrozenMusic: logo on the left, its light blue instead of YTM red
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"frozenSection"];
+        cell.textLabel.text = @"FrozenMusic";
+        cell.textLabel.textColor = FrozenMusicBlue();
+        cell.textLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+        cell.detailTextLabel.text = @"Downloads, offline player & more";
+        cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        UIImage *logo = [UIImage imageWithContentsOfFile:[NSBundle.ytmu_defaultBundle pathForResource:@"frozenmusic-29@3x" ofType:@"png" inDirectory:@"icons"]];
+        cell.imageView.image = [logo imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+        return cell;
+    }
+
+    if (indexPath.section == 2) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"settingsSection"];
 
         NSArray *settingsData = @[
@@ -140,7 +156,7 @@
         return cell;
     }
 
-    if (indexPath.section == 2) {
+    if (indexPath.section == 3) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"cacheSection"];
 
         cell.textLabel.text = LOC(@"CLEAR_CACHE");
@@ -159,7 +175,7 @@
         return cell;
     }
 
-    if (indexPath.section == 3) {
+    if (indexPath.section == 4) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"linkSection"];
 
         NSArray *settingsData = @[
@@ -211,6 +227,11 @@
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 1) {
+        [self.navigationController pushViewController:[FrozenMusicSettingsController new] animated:YES];
+        [tableView deselectRowAtIndexPath:indexPath animated:YES];
+        return;
+    }
+    if (indexPath.section == 2) {
         NSArray *controllers = @[[PremiumSettingsController class],
                                  [PlayerSettingsController class],
                                  [ThemeSettingsController class],
@@ -223,7 +244,7 @@
         }
     }
 
-    if (indexPath.section == 2 && indexPath.row == 0) {
+    if (indexPath.section == 3 && indexPath.row == 0) {
         UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
         activityIndicator.color = [UIColor labelColor];
         [activityIndicator startAnimating];
@@ -235,12 +256,12 @@
             [[NSFileManager defaultManager] removeItemAtPath:cachePath error:nil];
 
             dispatch_async(dispatch_get_main_queue(), ^{
-                [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:0 inSection:2]] withRowAnimation:UITableViewRowAnimationNone];
+                [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:0 inSection:3]] withRowAnimation:UITableViewRowAnimationNone];
             });
         });
     }
 
-    if (indexPath.section == 3) {
+    if (indexPath.section == 4) {
         NSArray *urls = @[@"https://twitter.com/ginsudev",
                         @"https://twitter.com/dayanch96",
                         @"https://discord.gg/VN9ZSeMhEW",
