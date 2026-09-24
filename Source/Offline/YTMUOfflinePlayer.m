@@ -313,6 +313,7 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
     [self activateSession];
     [self takeRemote];
     [track loadArtworkIfNeeded]; // library tracks come without cover
+    YTMURecordHistory(track.url, NO);
 
     self.audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:track.url error:nil];
     self.audioPlayer.delegate = self;

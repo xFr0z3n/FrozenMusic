@@ -280,6 +280,40 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     [presenter presentViewController:activity animated:YES completion:nil];
 }
 
+#pragma mark - Custom order (Edit)
+
+static NSString *YTMUOrderDefaultsKey(NSString *key) {
+    return [@"YTMUOrder:" stringByAppendingString:key];
+}
+
+NSArray<NSURL *> *YTMUApplySavedOrder(NSArray<NSURL *> *urls, NSString *key) {
+    NSArray<NSString *> *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:YTMUOrderDefaultsKey(key)];
+    if (saved.count == 0)
+        return urls;
+    NSMutableDictionary<NSString *, NSNumber *> *position = [NSMutableDictionary dictionary];
+    for (NSUInteger i = 0; i < saved.count; i++)
+        position[saved[i]] = @(i);
+    // Saved ones in their order, new ones (not in the list) keep their place at the top
+    return [urls sortedArrayWithOptions:NSSortStable usingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
+        NSNumber *pa = position[a.lastPathComponent], *pb = position[b.lastPathComponent];
+        if (!pa && !pb)
+            return NSOrderedSame;
+        if (!pa)
+            return NSOrderedAscending;
+        if (!pb)
+            return NSOrderedDescending;
+        return [pa compare:pb];
+    }];
+}
+
+void YTMUSaveOrder(NSArray<NSURL *> *urls, NSString *key) {
+    [[NSUserDefaults standardUserDefaults] setObject:[urls valueForKey:@"lastPathComponent"] forKey:YTMUOrderDefaultsKey(key)];
+}
+
+NSString *YTMUTrackOrderKey(NSURL *folder) {
+    return [@"tracks:" stringByAppendingString:folder.lastPathComponent ?: @""];
+}
+
 #pragma mark - Collection model
 
 @implementation YTMUCollection
@@ -299,7 +333,7 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
     [audio sortUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
         return [a.lastPathComponent compare:b.lastPathComponent options:NSNumericSearch | NSCaseInsensitiveSearch];
     }];
-    return audio;
+    return YTMUApplySavedOrder(audio, YTMUTrackOrderKey(folder));
 }
 
 + (NSArray<YTMUCollection *> *)collectionsInFolder:(NSURL *)root {
@@ -352,7 +386,18 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
         NSDate *second = dateA ?: [NSDate distantPast];
         return [first compare:second];
     }];
-    return collections;
+    // Order from Edit, if any
+    NSArray<NSURL *> *ordered = YTMUApplySavedOrder([collections valueForKey:@"folder"], @"collections");
+    NSMutableArray<YTMUCollection *> *sorted = [NSMutableArray array];
+    for (NSURL *folder in ordered) {
+        for (YTMUCollection *collection in collections) {
+            if ([collection.folder isEqual:folder]) {
+                [sorted addObject:collection];
+                break;
+            }
+        }
+    }
+    return sorted;
 }
 
 - (NSArray<YTMUOfflineTrack *> *)loadTracks {
@@ -508,11 +553,20 @@ void YTMUOpenInFiles(NSURL *folder) {
 }
 
 void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void)) {
+    YTMUShowCollectionMenuWithEdit(collection, presenter, source, onDeleted, nil);
+}
+
+void YTMUShowCollectionMenuWithEdit(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void), void (^onEdit)(void)) {
     if (!collection || !presenter)
         return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:collection.name
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
+    if (onEdit) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Edit" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            onEdit();
+        }]];
+    }
     if (collection.kind) {
         // Artist / creator: play, shuffle or share everything you have of them
         for (NSNumber *shuffle in @[@NO, @YES]) {
@@ -646,13 +700,17 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
         bar.frame = CGRectMake(i * (width + gap), height - barHeight, width, barHeight);
         bar.center = CGPointMake(i * (width + gap) + width / 2.0, height);
     }
-    if (self.animating)
+    // Only when an animation got lost: restarting on every layout made the bars jump
+    if (self.animating && ![self.bars.firstObject.layer animationForKey:@"bounce"])
         [self startAnimations];
 }
 
 - (void)setAnimating:(BOOL)animating {
-    if (_animating == animating)
+    if (_animating == animating) {
+        if (animating && ![self.bars.firstObject.layer animationForKey:@"bounce"])
+            [self startAnimations];
         return;
+    }
     _animating = animating;
     if (animating)
         [self startAnimations];
@@ -681,6 +739,29 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 }
 
 @end
+
+#pragma mark - Edit mode handles
+
+// YTM shows the "≡" drag handle on the left: move UIKit's reorder control there
+static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
+    if (!cell.editing)
+        return;
+    for (UIView *view in cell.subviews) {
+        if (![NSStringFromClass([view class]) containsString:@"Reorder"])
+            continue;
+        view.frame = CGRectMake(6, 0, 44, cell.bounds.size.height);
+        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightRegular];
+        UIImage *handle = [[UIImage systemImageNamed:@"line.3.horizontal" withConfiguration:config] imageWithTintColor:[UIColor whiteColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+        for (UIView *subview in view.subviews) {
+            if ([subview isKindOfClass:[UIImageView class]]) {
+                ((UIImageView *)subview).image = handle;
+                subview.contentMode = UIViewContentModeCenter;
+                subview.frame = view.bounds;
+            }
+        }
+        cell.contentView.frame = CGRectMake(44, 0, cell.bounds.size.width - 44, cell.bounds.size.height);
+    }
+}
 
 #pragma mark - Track cell
 
@@ -776,6 +857,20 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 - (void)setOnMenu:(void (^)(UIButton *))onMenu {
     _onMenu = [onMenu copy];
     self.menuButton.hidden = _onMenu == nil;
+}
+
+- (void)setSubtitleText:(NSString *)text {
+    self.subtitleLabel.text = text;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    YTMUMoveReorderControlLeft(self);
+}
+
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated {
+    [super setEditing:editing animated:animated];
+    self.menuButton.alpha = editing ? 0.0 : 1.0;
 }
 
 - (void)prepareForReuse {
@@ -887,6 +982,16 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 - (void)menuTapped:(UIButton *)sender {
     if (self.onMenu)
         self.onMenu(sender);
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    YTMUMoveReorderControlLeft(self);
+}
+
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated {
+    [super setEditing:editing animated:animated];
+    self.menuButton.alpha = editing ? 0.0 : 1.0;
 }
 
 - (void)configureWithCollection:(YTMUCollection *)collection {
@@ -1278,6 +1383,9 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 @property (nonatomic, strong) UIButton *moreButton;
 @property (nonatomic, strong) UIStackView *detailsSpacingColumn;
 @property (nonatomic, strong) CALayer *backdrop;
+@property (nonatomic, strong) UIButton *backButton;
+@property (nonatomic, strong) UIView *editBar;
+@property (nonatomic, strong) NSArray<YTMUOfflineTrack *> *tracksBeforeEdit;
 @property (nonatomic) BOOL detailsExpanded;
 @end
 
@@ -1331,6 +1439,36 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     backButton.translatesAutoresizingMaskIntoConstraints = NO;
     [backButton addTarget:self action:@selector(back) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:backButton];
+    self.backButton = backButton;
+
+    // Edit mode bar: X (cancel) left, Done right, like YTM
+    self.editBar = [UIView new];
+    self.editBar.backgroundColor = YTMUBackground();
+    self.editBar.hidden = YES;
+    self.editBar.translatesAutoresizingMaskIntoConstraints = NO;
+    UIButton *cancelEdit = YTMUIconButton(@"xmark", 22, [UIColor whiteColor]);
+    [cancelEdit addTarget:self action:@selector(cancelEditing) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *doneEdit = [UIButton buttonWithType:UIButtonTypeSystem];
+    [doneEdit setTitle:@"Done" forState:UIControlStateNormal];
+    [doneEdit setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    doneEdit.titleLabel.font = [UIFont systemFontOfSize:18 weight:UIFontWeightSemibold];
+    doneEdit.translatesAutoresizingMaskIntoConstraints = NO;
+    [doneEdit addTarget:self action:@selector(finishEditing) forControlEvents:UIControlEventTouchUpInside];
+    [self.editBar addSubview:cancelEdit];
+    [self.editBar addSubview:doneEdit];
+    [self.view addSubview:self.editBar];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.editBar.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.editBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.editBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.editBar.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:52],
+        [cancelEdit.leadingAnchor constraintEqualToAnchor:self.editBar.leadingAnchor constant:12],
+        [cancelEdit.bottomAnchor constraintEqualToAnchor:self.editBar.bottomAnchor constant:-4],
+        [cancelEdit.widthAnchor constraintEqualToConstant:44],
+        [cancelEdit.heightAnchor constraintEqualToConstant:44],
+        [doneEdit.trailingAnchor constraintEqualToAnchor:self.editBar.trailingAnchor constant:-20],
+        [doneEdit.centerYAnchor constraintEqualToAnchor:cancelEdit.centerYAnchor]
+    ]];
 
     [NSLayoutConstraint activateConstraints:@[
         [self.tableView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
@@ -1356,6 +1494,8 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
     self.tableView.tableFooterView = self.spinner;
 
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerChanged) name:YTMUOfflinePlayerDidChangeNotification object:nil];
+    if (!self.collection.kind && self.collection.folder)
+        YTMURecordHistory(self.collection.folder, YES);
     [self loadTracks];
 }
 
@@ -1559,11 +1699,74 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 }
 
 - (void)showMenu:(UIButton *)sender {
-    YTMUShowCollectionMenu(self.collection, self, sender, ^{
-        if (self.onChange)
-            self.onChange();
-        [self dismissViewControllerAnimated:YES completion:nil];
+    __weak __typeof(self) weakSelf = self;
+    // Edit (reorder) only for real playlists / albums
+    YTMUShowCollectionMenuWithEdit(self.collection, self, sender, ^{
+        if (weakSelf.onChange)
+            weakSelf.onChange();
+        [weakSelf dismissViewControllerAnimated:YES completion:nil];
+    }, self.collection.kind ? nil : ^{
+        [weakSelf startEditing];
     });
+}
+
+#pragma mark Edit (reorder songs)
+
+- (void)startEditing {
+    if (self.tracks.count < 2)
+        return;
+    self.tracksBeforeEdit = self.tracks;
+    self.editBar.hidden = NO;
+    self.backButton.hidden = YES;
+    [self.tableView setEditing:YES animated:YES];
+    // Straight to the songs
+    [self.tableView scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0] atScrollPosition:UITableViewScrollPositionTop animated:YES];
+}
+
+- (void)endEditing {
+    self.editBar.hidden = YES;
+    self.backButton.hidden = NO;
+    [self.tableView setEditing:NO animated:YES];
+    [self.tableView reloadData];
+}
+
+- (void)cancelEditing {
+    self.tracks = self.tracksBeforeEdit ?: self.tracks;
+    [self endEditing];
+}
+
+- (void)finishEditing {
+    NSArray<NSURL *> *order = [self.tracks valueForKey:@"url"];
+    if (self.collection.folder)
+        YTMUSaveOrder(order, YTMUTrackOrderKey(self.collection.folder));
+    self.collection.files = order;
+    [self endEditing];
+    if (self.onChange)
+        self.onChange();
+}
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    return tableView.editing;
+}
+
+- (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
+    return YES;
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    return UITableViewCellEditingStyleNone;
+}
+
+- (BOOL)tableView:(UITableView *)tableView shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    return NO;
+}
+
+- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)sourceIndexPath toIndexPath:(NSIndexPath *)destinationIndexPath {
+    NSMutableArray<YTMUOfflineTrack *> *tracks = [self.tracks mutableCopy];
+    YTMUOfflineTrack *track = tracks[(NSUInteger)sourceIndexPath.row];
+    [tracks removeObjectAtIndex:(NSUInteger)sourceIndexPath.row];
+    [tracks insertObject:track atIndex:(NSUInteger)destinationIndexPath.row];
+    self.tracks = tracks;
 }
 
 - (void)viewDidLayoutSubviews {

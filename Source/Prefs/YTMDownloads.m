@@ -1,6 +1,7 @@
 #import "YTMDownloads.h"
 #import "../Offline/YTMUOfflineUI.h"
 #import "../Offline/YTMUSearchViewController.h"
+#import "../Offline/YTMUHistory.h"
 
 // Chips at the top, like YTM's Library
 typedef NS_ENUM(NSInteger, YTMUFilter) {
@@ -37,6 +38,10 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
 @property (nonatomic) BOOL loadingLibrary;
 @property (nonatomic, strong) UIView *chipHeader;
 @property (nonatomic, strong) UIScrollView *chipBar;
+@property (nonatomic, strong) UIView *topBar;        // "Downloads" + history / search / ⋮, inside YTM's top bar
+@property (nonatomic, strong) UIView *topBarNormal;
+@property (nonatomic, strong) UIView *topBarEditing; // X ... Done
+@property (nonatomic) BOOL editingOrder;
 @end
 
 #pragma mark - YTM's player while the Downloads tab is open
@@ -107,7 +112,11 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
         self.tableView.sectionHeaderTopPadding = 0;
     // Room for YTM's top bar, then the filter chips
     [self buildChipHeader];
-    self.tableView.contentInset = UIEdgeInsetsMake(0, 0, 170, 0);
+    // Top inset follows YTM's top bar (see layoutTopBar)
+    self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    self.tableView.contentInset = UIEdgeInsetsMake(110, 0, 170, 0);
+    self.tableView.contentOffset = CGPointMake(0, -110);
+    [self buildTopBar];
     [self.tableView registerClass:[YTMUTrackCell class] forCellReuseIdentifier:@"track"];
     [self.tableView registerClass:[YTMUCollectionCell class] forCellReuseIdentifier:@"collection"];
     [self.view addSubview:self.tableView];
@@ -169,6 +178,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    // Leaving the tab: YTM's logo comes back right away (the timer shows ours again if we stay)
+    [self layoutTopBar:NO];
     // Our own playlist page / Now Playing slides over: keep YTM's player hidden
     dispatch_async(dispatch_get_main_queue(), ^{
         [self syncAppPlayer];
@@ -193,33 +204,234 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 }
 
 - (void)buildChipHeader {
-    self.chipHeader = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 64 + 44 + 56)];
-    self.chipHeader.autoresizesSubviews = YES;
-
-    // History + search, top right like YTM's Library
-    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:23 weight:UIImageSymbolWeightRegular];
-    UIButton *search = [UIButton buttonWithType:UIButtonTypeSystem];
-    [search setImage:[UIImage systemImageNamed:@"magnifyingglass" withConfiguration:config] forState:UIControlStateNormal];
-    UIButton *history = [UIButton buttonWithType:UIButtonTypeSystem];
-    [history setImage:[UIImage systemImageNamed:@"clock.arrow.circlepath" withConfiguration:config] forState:UIControlStateNormal];
-    CGFloat width = self.chipHeader.bounds.size.width;
-    search.frame = CGRectMake(width - 16 - 44, 64, 44, 44);
-    history.frame = CGRectMake(width - 16 - 44 - 8 - 44, 64, 44, 44);
-    for (UIButton *button in @[search, history]) {
-        button.tintColor = [UIColor whiteColor];
-        button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        [self.chipHeader addSubview:button];
-    }
-    [search addTarget:self action:@selector(openSearch) forControlEvents:UIControlEventTouchUpInside];
-    // (history: next step)
-
-    self.chipBar = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 64 + 50, width, 42)];
+    self.chipHeader = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 52)];
+    self.chipBar = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 2, 320, 42)];
     self.chipBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     self.chipBar.showsHorizontalScrollIndicator = NO;
     self.chipBar.alwaysBounceHorizontal = YES;
     [self.chipHeader addSubview:self.chipBar];
     self.tableView.tableHeaderView = self.chipHeader;
     [self rebuildChips];
+}
+
+#pragma mark Top bar ("Downloads" instead of YTM's logo)
+
+- (UIButton *)topBarButton:(NSString *)symbol action:(SEL)action {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:19 weight:UIImageSymbolWeightRegular];
+    [button setImage:[UIImage systemImageNamed:symbol withConfiguration:config] forState:UIControlStateNormal];
+    button.tintColor = [UIColor whiteColor];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [button.widthAnchor constraintEqualToConstant:40].active = YES;
+    [button.heightAnchor constraintEqualToConstant:40].active = YES;
+    return button;
+}
+
+- (void)buildTopBar {
+    self.topBar = [UIView new];
+    self.topBar.backgroundColor = YTMUBackgroundColor();
+    self.topBar.hidden = YES;
+
+    // Normal: title left, history / search / ⋮ right (YTM's avatar stays visible next to it)
+    self.topBarNormal = [UIView new];
+    self.topBarNormal.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    UILabel *title = [UILabel new];
+    title.text = @"Downloads";
+    title.font = [UIFont systemFontOfSize:26 weight:UIFontWeightBold];
+    title.textColor = [UIColor whiteColor];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    UIButton *history = [self topBarButton:@"clock.arrow.circlepath" action:@selector(openHistory)];
+    UIButton *search = [self topBarButton:@"magnifyingglass" action:@selector(openSearch)];
+    UIButton *more = [self topBarButton:@"ellipsis" action:@selector(showTopMenu:)];
+    more.transform = CGAffineTransformMakeRotation((CGFloat)M_PI_2);
+    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[history, search, more]];
+    buttons.spacing = 2;
+    buttons.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.topBarNormal addSubview:title];
+    [self.topBarNormal addSubview:buttons];
+    [NSLayoutConstraint activateConstraints:@[
+        [title.leadingAnchor constraintEqualToAnchor:self.topBarNormal.leadingAnchor constant:16],
+        [title.centerYAnchor constraintEqualToAnchor:self.topBarNormal.centerYAnchor],
+        [buttons.trailingAnchor constraintEqualToAnchor:self.topBarNormal.trailingAnchor constant:-2],
+        [buttons.centerYAnchor constraintEqualToAnchor:self.topBarNormal.centerYAnchor]
+    ]];
+
+    // Edit: X left, Done right
+    self.topBarEditing = [UIView new];
+    self.topBarEditing.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.topBarEditing.hidden = YES;
+    UIButton *cancel = [self topBarButton:@"xmark" action:@selector(cancelEditingOrder)];
+    UIButton *done = [UIButton buttonWithType:UIButtonTypeSystem];
+    [done setTitle:@"Done" forState:UIControlStateNormal];
+    [done setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    done.titleLabel.font = [UIFont systemFontOfSize:18 weight:UIFontWeightSemibold];
+    done.translatesAutoresizingMaskIntoConstraints = NO;
+    [done addTarget:self action:@selector(finishEditingOrder) forControlEvents:UIControlEventTouchUpInside];
+    [self.topBarEditing addSubview:cancel];
+    [self.topBarEditing addSubview:done];
+    [NSLayoutConstraint activateConstraints:@[
+        [cancel.leadingAnchor constraintEqualToAnchor:self.topBarEditing.leadingAnchor constant:10],
+        [cancel.centerYAnchor constraintEqualToAnchor:self.topBarEditing.centerYAnchor],
+        [done.trailingAnchor constraintEqualToAnchor:self.topBarEditing.trailingAnchor constant:-12],
+        [done.centerYAnchor constraintEqualToAnchor:self.topBarEditing.centerYAnchor]
+    ]];
+
+    [self.topBar addSubview:self.topBarNormal];
+    [self.topBar addSubview:self.topBarEditing];
+}
+
+// YTM's own top bar (logo + avatar) sits above this tab: find it and put ours inside
+- (UIView *)appTopBarInWindow:(UIWindow *)window {
+    CGFloat safeTop = window.safeAreaInsets.top;
+    BOOL wasHidden = self.topBar.hidden;
+    self.topBar.hidden = YES; // don't find ourselves
+    UIView *hit = [window hitTest:CGPointMake(60, safeTop + 22) withEvent:nil];
+    self.topBar.hidden = wasHidden;
+    for (UIView *view = hit; view && view != window; view = view.superview) {
+        if (view == self.view || [view isDescendantOfView:self.view])
+            return nil; // nothing above us there
+        CGRect frame = [view convertRect:view.bounds toView:nil];
+        if (frame.size.width >= window.bounds.size.width - 1 && frame.size.height < 200 && CGRectGetMaxY(frame) > safeTop + 20)
+            return view;
+    }
+    return nil;
+}
+
+- (void)layoutTopBar:(BOOL)onScreen {
+    UIWindow *window = self.view.window;
+    if (!onScreen || !window) {
+        self.topBar.hidden = YES;
+        return;
+    }
+    CGFloat safeTop = window.safeAreaInsets.top;
+    CGFloat width = window.bounds.size.width;
+    UIView *host = self.topBar.superview;
+    if (!host || host == self.view || !host.window) {
+        UIView *appBar = [self appTopBarInWindow:window];
+        host = appBar ?: self.view;
+        if (self.topBar.superview != host)
+            [host addSubview:self.topBar];
+    }
+    [host bringSubviewToFront:self.topBar];
+
+    // Same height as YTM's bar, leaving its avatar (right) visible
+    CGRect hostInWindow = [host convertRect:host.bounds toView:nil];
+    CGFloat barHeight = host == self.view ? 52 : MAX(44, MIN(70, CGRectGetMaxY(hostInWindow) - safeTop));
+    CGRect frameInWindow = CGRectMake(0, safeTop, host == self.view ? width : width - 62, barHeight);
+    self.topBar.frame = [host convertRect:frameInWindow fromView:nil];
+    self.topBar.hidden = NO;
+
+    // List starts right below the bar
+    CGFloat inset = CGRectGetMaxY([self.view convertRect:frameInWindow fromView:nil]);
+    if (fabs(self.tableView.contentInset.top - inset) > 0.5) {
+        BOOL atTop = self.tableView.contentOffset.y <= -self.tableView.contentInset.top + 1;
+        UIEdgeInsets insets = self.tableView.contentInset;
+        insets.top = inset;
+        self.tableView.contentInset = insets;
+        self.tableView.scrollIndicatorInsets = insets;
+        if (atTop)
+            self.tableView.contentOffset = CGPointMake(0, -inset);
+    }
+}
+
+- (void)openHistory {
+    YTMUHistoryViewController *history = [[YTMUHistoryViewController alloc] initWithRoot:[self rootFolder]];
+    history.modalPresentationStyle = UIModalPresentationFullScreen;
+    __weak __typeof(self) weakSelf = self;
+    history.onChange = ^{
+        [weakSelf reloadData];
+    };
+    [self presentViewController:history animated:YES completion:nil];
+}
+
+- (void)showTopMenu:(UIButton *)sender {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Edit" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [self startEditingOrder];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sender;
+    sheet.popoverPresentationController.sourceRect = sender.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+#pragma mark Edit (reorder playlists & albums, songs)
+
+- (void)startEditingOrder {
+    if (self.filter != YTMUFilterNone) {
+        self.filter = YTMUFilterNone;
+        [self rebuildChips];
+    }
+    self.editingOrder = YES;
+    self.topBarNormal.hidden = YES;
+    self.topBarEditing.hidden = NO;
+    self.chipBar.userInteractionEnabled = NO;
+    self.chipBar.alpha = 0.4;
+    [self.tableView reloadData];
+    [self.tableView setEditing:YES animated:YES];
+}
+
+- (void)stopEditingOrder {
+    self.editingOrder = NO;
+    self.topBarNormal.hidden = NO;
+    self.topBarEditing.hidden = YES;
+    self.chipBar.userInteractionEnabled = YES;
+    self.chipBar.alpha = 1.0;
+    [self.tableView setEditing:NO animated:YES];
+}
+
+- (void)cancelEditingOrder {
+    [self stopEditingOrder];
+    [self reloadData]; // back to the saved order
+}
+
+- (void)finishEditingOrder {
+    YTMUSaveOrder([self.collections valueForKey:@"folder"], @"collections");
+    YTMUSaveOrder([self.songs valueForKey:@"url"], YTMUTrackOrderKey([self rootFolder]));
+    [self stopEditingOrder];
+    [self.tableView reloadData];
+}
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    return self.editingOrder;
+}
+
+- (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
+    return self.editingOrder && self.filter == YTMUFilterNone &&
+           (indexPath.section == YTMUSectionCollections || indexPath.section == YTMUSectionSongs);
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    return UITableViewCellEditingStyleNone;
+}
+
+- (BOOL)tableView:(UITableView *)tableView shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    return NO;
+}
+
+// Rows stay in their own section
+- (NSIndexPath *)tableView:(UITableView *)tableView targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)source toProposedIndexPath:(NSIndexPath *)proposed {
+    if (proposed.section == source.section)
+        return proposed;
+    NSInteger rows = [self tableView:tableView numberOfRowsInSection:source.section];
+    return [NSIndexPath indexPathForRow:(proposed.section < source.section ? 0 : rows - 1) inSection:source.section];
+}
+
+- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)source toIndexPath:(NSIndexPath *)destination {
+    if (source.section == YTMUSectionCollections) {
+        NSMutableArray *items = [self.collections mutableCopy];
+        id item = items[(NSUInteger)source.row];
+        [items removeObjectAtIndex:(NSUInteger)source.row];
+        [items insertObject:item atIndex:(NSUInteger)destination.row];
+        self.collections = items;
+    } else if (source.section == YTMUSectionSongs) {
+        NSMutableArray *items = [self.songs mutableCopy];
+        id item = items[(NSUInteger)source.row];
+        [items removeObjectAtIndex:(NSUInteger)source.row];
+        [items insertObject:item atIndex:(NSUInteger)destination.row];
+        self.songs = items;
+    }
 }
 
 - (UIButton *)chipWithTitle:(NSString *)title symbol:(NSString *)symbol selected:(BOOL)selected tag:(NSInteger)tag {
@@ -381,7 +593,7 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     UIWindow *window = self.view.window ?: [UIApplication sharedApplication].keyWindow;
     for (UIViewController *vc = window.rootViewController.presentedViewController; vc; vc = vc.presentedViewController) {
         if ([vc isKindOfClass:[YTMUCollectionViewController class]] || [vc isKindOfClass:[YTMUNowPlayingViewController class]] ||
-            [vc isKindOfClass:[YTMUSearchViewController class]])
+            [vc isKindOfClass:[YTMUSearchViewController class]] || [vc isKindOfClass:[YTMUHistoryViewController class]])
             return YES;
         // Menus / share sheets opened while YTM's player was already hidden here
         if (self.hiddenAppPlayerViews.count && ([vc isKindOfClass:[UIAlertController class]] || [vc isKindOfClass:[UIActivityViewController class]]))
@@ -392,6 +604,7 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 // Runs every 0.25 s while this tab exists: YTM's player hidden exactly while we're visible
 - (void)syncAppPlayer {
+    [self layoutTopBar:[self ytmu_isOnScreen]];
     if (!self.keepAppPlayer && ([self ytmu_isOnScreen] || (self.hiddenAppPlayerViews.count && [self ytmu_ownScreenOnTop])))
         [self hideAppPlayerForced:NO];
     else
@@ -539,7 +752,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 }
 
 - (void)playerChanged {
-    [self.tableView reloadData];
+    if (!self.editingOrder)
+        [self.tableView reloadData];
 }
 
 - (BOOL)hasNowPlaying {
@@ -669,6 +883,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (self.editingOrder)
+        return;
 
     if (self.filter != YTMUFilterNone) {
         NSArray *items = [self filterItems];
