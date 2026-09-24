@@ -360,10 +360,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 - (UIColor *)barColorOf:(UIView *)host {
     for (UIView *view = host; view && view != self.view; view = view.superview) {
         UIColor *color = view.backgroundColor;
-        CGFloat alpha = 0;
-        if (color && [color getWhite:NULL alpha:&alpha] && alpha > 0.9)
-            return color;
-        if (color && [color getRed:NULL green:NULL blue:NULL alpha:&alpha] && alpha > 0.9)
+        CGFloat red = 0, green = 0, blue = 0, alpha = 0;
+        if (color && [color getRed:&red green:&green blue:&blue alpha:&alpha] && alpha > 0.9)
             return color;
     }
     return YTMUBackgroundColor();
