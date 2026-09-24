@@ -1,4 +1,13 @@
 #import "FrozenMusicSettingsController.h"
+#import "FrozenDiscordSettingsController.h"
+
+// Discord RPC page on top, then the switches, then the links
+typedef NS_ENUM(NSInteger, FrozenMusicSection) {
+    FrozenMusicSectionDiscord,
+    FrozenMusicSectionToggles,
+    FrozenMusicSectionLinks,
+    FrozenMusicSectionCount
+};
 
 static NSString *const FrozenMusicWebsite = @"https://fr0z3n.com";
 static NSString *const FrozenMusicRepo = @"https://github.com/xFr0z3n/YTMusicUltimate";
@@ -19,7 +28,8 @@ static UIImage *FrozenMusicBundleIcon(NSString *name) {
     return @[
         @{@"title": @"Original YTM album look", @"desc": @"Albums show track numbers instead of cover art, like YouTube Music's album pages", @"key": @"frozenAlbumLook"},
         @{@"title": @"Player hue with OLED", @"desc": @"Keep the cover-colored hue in the full player when OLED Dark Theme is on", @"key": @"frozenOledPlayerHue"},
-        @{@"title": @"YTM volume boost look", @"desc": @"Volume Boost panel in YouTube Music's style: grey, or black with OLED Dark Theme, with a white slider", @"key": @"frozenVolumeLook"}
+        @{@"title": @"YTM volume boost look", @"desc": @"Volume Boost panel in YouTube Music's style: grey, or black with OLED Dark Theme, with a white slider", @"key": @"frozenVolumeLook"},
+        @{@"title": @"Snappy", @"desc": @"Everything in the Downloads tab opens and closes instantly, without animations", @"key": @"frozenSnappy"}
     ];
 }
 
@@ -55,23 +65,27 @@ static UIImage *FrozenMusicBundleIcon(NSString *name) {
 #pragma mark Table
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 2;
+    return FrozenMusicSectionCount;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? (NSInteger)[self toggles].count : 2;
+    switch (section) {
+        case FrozenMusicSectionDiscord: return 1;
+        case FrozenMusicSectionToggles: return (NSInteger)[self toggles].count;
+        default: return 2;
+    }
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section == 1 ? LOC(@"LINKS") : nil;
+    return section == FrozenMusicSectionLinks ? LOC(@"LINKS") : nil;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return section == 1 ? @"\nFrozenMusic by Fr0z3n" : nil;
+    return section == FrozenMusicSectionLinks ? @"\nFrozenMusic by Fr0z3n" : nil;
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
-    if (section == 1)
+    if (section == FrozenMusicSectionLinks)
         ((UITableViewHeaderFooterView *)view).textLabel.textAlignment = NSTextAlignmentCenter;
 }
 
@@ -81,7 +95,16 @@ static UIImage *FrozenMusicBundleIcon(NSString *name) {
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
     cell.textLabel.adjustsFontSizeToFitWidth = YES;
 
-    if (indexPath.section == 0) {
+    if (indexPath.section == FrozenMusicSectionDiscord) {
+        cell.textLabel.text = @"Discord RPC";
+        cell.detailTextLabel.text = @"Show what you're listening to on Discord";
+        cell.imageView.image = [UIImage systemImageNamed:@"gamecontroller.fill"];
+        cell.imageView.tintColor = [UIColor colorWithRed:88 / 255.0 green:101 / 255.0 blue:242 / 255.0 alpha:1.0]; // Discord blurple
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        return cell;
+    }
+
+    if (indexPath.section == FrozenMusicSectionToggles) {
         NSDictionary *toggle = [self toggles][(NSUInteger)indexPath.row];
         NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"YTMUltimate"];
         cell.textLabel.text = toggle[@"title"];
@@ -112,12 +135,16 @@ static UIImage *FrozenMusicBundleIcon(NSString *name) {
 }
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
-    return indexPath.section == 1;
+    return indexPath.section != FrozenMusicSectionToggles;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section != 1)
+    if (indexPath.section == FrozenMusicSectionDiscord) {
+        [self.navigationController pushViewController:[FrozenDiscordSettingsController new] animated:YES];
+        return;
+    }
+    if (indexPath.section != FrozenMusicSectionLinks)
         return;
     NSURL *url = [NSURL URLWithString:indexPath.row == 0 ? FrozenMusicWebsite : FrozenMusicRepo];
     [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];

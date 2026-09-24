@@ -41,6 +41,15 @@ BOOL YTMUPrefEnabled(NSString *key) {
     return [prefs[key] boolValue];
 }
 
+// FrozenMusic > Snappy: everything in the Downloads tab happens instantly
+BOOL YTMUAnimations(void) {
+    return !YTMUPrefEnabled(@"frozenSnappy");
+}
+
+NSTimeInterval YTMUDuration(NSTimeInterval duration) {
+    return YTMUAnimations() ? duration : 0;
+}
+
 UIColor *YTMUBackgroundColor(void) {
     return YTMUIsOLED() ? [UIColor blackColor] : [UIColor colorWithRed:3 / 255.0 green:3 / 255.0 blue:3 / 255.0 alpha:1.0];
 }
@@ -270,7 +279,7 @@ static void YTMUShare(NSArray *items, UIViewController *presenter, UIView *sourc
         popover.sourceView = source;
         popover.sourceRect = source.bounds;
     }
-    [presenter presentViewController:activity animated:YES completion:nil];
+    [presenter presentViewController:activity animated:YTMUAnimations() completion:nil];
 }
 
 #pragma mark - Custom order (Edit)
@@ -568,7 +577,7 @@ static UIViewController *YTMUTopPresenter(UIViewController *presenter) {
 static void YTMUOpenCollectionPage(YTMUCollection *collection, UIViewController *presenter) {
     YTMUCollectionViewController *page = [[YTMUCollectionViewController alloc] initWithCollection:collection];
     page.modalPresentationStyle = UIModalPresentationFullScreen;
-    [YTMUTopPresenter(presenter) presentViewController:page animated:YES completion:nil];
+    [YTMUTopPresenter(presenter) presentViewController:page animated:YTMUAnimations() completion:nil];
 }
 
 // Songs of a playlist / artist are read in the background, then used
@@ -643,7 +652,7 @@ void YTMUShowCollectionMenuFull(YTMUCollection *collection, UIViewController *pr
                     onDeleted();
             }]];
             [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            [YTMUTopPresenter(presenter) presentViewController:alert animated:YES completion:nil];
+            [YTMUTopPresenter(presenter) presentViewController:alert animated:YTMUAnimations() completion:nil];
         }]];
     }
     [sheet presentFrom:presenter];
@@ -1270,7 +1279,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 - (void)openNowPlaying {
     YTMUNowPlayingViewController *nowPlaying = [YTMUNowPlayingViewController new];
     nowPlaying.modalPresentationStyle = UIModalPresentationFullScreen;
-    [self.presenter presentViewController:nowPlaying animated:YES completion:nil];
+    [self.presenter presentViewController:nowPlaying animated:YTMUAnimations() completion:nil];
 }
 
 @end
@@ -1297,6 +1306,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 @property (nonatomic, strong) UIView *upNextBar;
 @property (nonatomic, strong) UILabel *upNextLabel;
 @property (nonatomic, strong) UIView *queueView;
+@property (nonatomic, strong) UIView *queueHeader;
 @property (nonatomic, strong) UILabel *queueSourceLabel;
 @property (nonatomic, strong) UITableView *queueTable;
 @property (nonatomic, strong) NSArray<YTMUOfflineTrack *> *queueItems;
@@ -1484,14 +1494,39 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    // Queue open: the hue only covers the player part and fades out smoothly
-    // right above the queue, like the bottom of the closed player
+    // Queue open: the hue covers the player and the queue header and eases out
+    // there, so it melts into the list without an edge
     CGRect frame = self.view.bounds;
-    if (self.showingQueue && CGRectGetMinY(self.queueView.frame) > 0)
-        frame.size.height = CGRectGetMinY(self.queueView.frame);
+    if (self.showingQueue && CGRectGetMinY(self.queueView.frame) > 0) {
+        CGFloat header = MAX(CGRectGetHeight(self.queueHeader.frame), 60);
+        frame.size.height = MIN(CGRectGetHeight(frame), CGRectGetMinY(self.queueView.frame) + header);
+    }
+    [CATransaction begin];
+    [CATransaction setDisableActions:!YTMUAnimations()]; // Snappy: the hue jumps too
     self.backdrop.frame = frame;
     self.gradient.frame = self.backdrop.bounds;
-    self.gradient.locations = self.showingQueue ? @[@0.1, @1.0] : @[@0.15, @0.75];
+    if (self.showingQueue) {
+        static NSArray *easedColors, *easedLocations;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            // 1 - smoothstep between 10% and 100%: no visible start or end of the fade
+            NSMutableArray *colors = [NSMutableArray array], *locations = [NSMutableArray array];
+            for (NSInteger i = 0; i <= 12; i++) {
+                CGFloat t = i / 12.0;
+                CGFloat alpha = 1 - t * t * (3 - 2 * t);
+                [colors addObject:(__bridge id)[UIColor colorWithWhite:0 alpha:alpha].CGColor];
+                [locations addObject:@(0.1 + 0.9 * t)];
+            }
+            easedColors = colors;
+            easedLocations = locations;
+        });
+        self.gradient.colors = easedColors;
+        self.gradient.locations = easedLocations;
+    } else {
+        self.gradient.colors = @[(id)[UIColor blackColor].CGColor, (id)[UIColor clearColor].CGColor];
+        self.gradient.locations = @[@0.15, @0.75];
+    }
+    [CATransaction commit];
 }
 
 - (void)refresh {
@@ -1584,8 +1619,9 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 #pragma mark Queue
 
 - (void)buildQueueView {
+    // See-through: the hue runs on behind the header and fades out there (view background below)
     self.queueView = [UIView new];
-    self.queueView.backgroundColor = YTMUBackground();
+    self.queueView.backgroundColor = [UIColor clearColor];
     self.queueView.alpha = 0;
     self.queueView.hidden = YES;
     self.queueView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1601,6 +1637,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     // Tap / swipe down on the header: back to the big artwork
     UIView *header = [UIView new];
     header.translatesAutoresizingMaskIntoConstraints = NO;
+    self.queueHeader = header;
     [header addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(hideQueue)]];
     UISwipeGestureRecognizer *swipeDown = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(hideQueue)];
     swipeDown.direction = UISwipeGestureRecognizerDirectionDown;
@@ -1662,7 +1699,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     self.artworkAspect.active = NO;
     self.artworkCollapsed.active = YES;
     self.titleTop.constant = 4;
-    [UIView animateWithDuration:0.3 animations:^{
+    [UIView animateWithDuration:YTMUDuration(0.3) animations:^{
         self.artworkView.alpha = 0;
         self.upNextBar.alpha = 0;
         self.queueView.alpha = 1;
@@ -1681,7 +1718,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     self.artworkCollapsed.active = NO;
     self.artworkAspect.active = YES;
     self.titleTop.constant = 36;
-    [UIView animateWithDuration:0.3 animations:^{
+    [UIView animateWithDuration:YTMUDuration(0.3) animations:^{
         self.artworkView.alpha = 1;
         self.upNextBar.alpha = 1;
         self.queueView.alpha = 0;
@@ -1739,7 +1776,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
         return;
     }
     if (self.presentingViewController && !self.isBeingDismissed)
-        [self dismissViewControllerAnimated:YES completion:nil];
+        [self dismissViewControllerAnimated:YTMUAnimations() completion:nil];
 }
 
 @end
@@ -2140,7 +2177,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     YTMUShowCollectionMenuFull(self.collection, self, sender, ^{
         if (weakSelf.onChange)
             weakSelf.onChange();
-        [weakSelf dismissViewControllerAnimated:YES completion:nil];
+        [weakSelf dismissViewControllerAnimated:YTMUAnimations() completion:nil];
     }, self.collection.kind ? nil : ^{
         [weakSelf startEditing];
     }, ^{
@@ -2290,7 +2327,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 #pragma mark Actions
 
 - (void)back {
-    [self dismissViewControllerAnimated:YES completion:nil];
+    [self dismissViewControllerAnimated:YTMUAnimations() completion:nil];
 }
 
 - (void)playAll {
@@ -2375,7 +2412,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
         completion(NO);
     }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    [self presentViewController:alert animated:YTMUAnimations() completion:nil];
 }
 
 @end
