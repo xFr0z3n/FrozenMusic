@@ -1,5 +1,6 @@
 #import "YTMDownloads.h"
 #import "../Offline/YTMUOfflineUI.h"
+#import "../Offline/YTMUSearchViewController.h"
 
 // Chips at the top, like YTM's Library
 typedef NS_ENUM(NSInteger, YTMUFilter) {
@@ -192,8 +193,27 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 }
 
 - (void)buildChipHeader {
-    self.chipHeader = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 64 + 50)];
-    self.chipBar = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 64, 1, 42)];
+    self.chipHeader = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 64 + 44 + 56)];
+    self.chipHeader.autoresizesSubviews = YES;
+
+    // History + search, top right like YTM's Library
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:23 weight:UIImageSymbolWeightRegular];
+    UIButton *search = [UIButton buttonWithType:UIButtonTypeSystem];
+    [search setImage:[UIImage systemImageNamed:@"magnifyingglass" withConfiguration:config] forState:UIControlStateNormal];
+    UIButton *history = [UIButton buttonWithType:UIButtonTypeSystem];
+    [history setImage:[UIImage systemImageNamed:@"clock.arrow.circlepath" withConfiguration:config] forState:UIControlStateNormal];
+    CGFloat width = self.chipHeader.bounds.size.width;
+    search.frame = CGRectMake(width - 16 - 44, 64, 44, 44);
+    history.frame = CGRectMake(width - 16 - 44 - 8 - 44, 64, 44, 44);
+    for (UIButton *button in @[search, history]) {
+        button.tintColor = [UIColor whiteColor];
+        button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+        [self.chipHeader addSubview:button];
+    }
+    [search addTarget:self action:@selector(openSearch) forControlEvents:UIControlEventTouchUpInside];
+    // (history: next step)
+
+    self.chipBar = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 64 + 50, width, 42)];
     self.chipBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     self.chipBar.showsHorizontalScrollIndicator = NO;
     self.chipBar.alwaysBounceHorizontal = YES;
@@ -318,6 +338,16 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     }
 }
 
+- (void)openSearch {
+    YTMUSearchViewController *search = [[YTMUSearchViewController alloc] initWithRoot:[self rootFolder] collections:self.collections library:self.library];
+    search.modalPresentationStyle = UIModalPresentationFullScreen;
+    __weak __typeof(self) weakSelf = self;
+    search.onChange = ^{
+        [weakSelf reloadData];
+    };
+    [self presentViewController:search animated:YES completion:nil];
+}
+
 - (void)openCollection:(YTMUCollection *)collection {
     YTMUCollectionViewController *page = [[YTMUCollectionViewController alloc] initWithCollection:collection];
     page.modalPresentationStyle = UIModalPresentationFullScreen;
@@ -350,7 +380,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 - (BOOL)ytmu_ownScreenOnTop {
     UIWindow *window = self.view.window ?: [UIApplication sharedApplication].keyWindow;
     for (UIViewController *vc = window.rootViewController.presentedViewController; vc; vc = vc.presentedViewController) {
-        if ([vc isKindOfClass:[YTMUCollectionViewController class]] || [vc isKindOfClass:[YTMUNowPlayingViewController class]])
+        if ([vc isKindOfClass:[YTMUCollectionViewController class]] || [vc isKindOfClass:[YTMUNowPlayingViewController class]] ||
+            [vc isKindOfClass:[YTMUSearchViewController class]])
             return YES;
         // Menus / share sheets opened while YTM's player was already hidden here
         if (self.hiddenAppPlayerViews.count && ([vc isKindOfClass:[UIAlertController class]] || [vc isKindOfClass:[UIActivityViewController class]]))
