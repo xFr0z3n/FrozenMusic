@@ -3,15 +3,15 @@
 
 static NSString *const YTMUHistoryKey = @"YTMUPlayHistory";
 
-static NSURL *YTMUHistoryRoot(void) {
-    NSURL *documents = [[[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask] lastObject];
-    return [documents URLByAppendingPathComponent:@"YTMusicUltimate"];
-}
-
+// "Song.m4a" or "Playlist/1. Song.m4a" - whatever comes after Documents/YTMusicUltimate/.
+// (File URLs can start with /private/var or /var: comparing whole paths missed every song.)
 static NSString *YTMURelativePath(NSURL *url) {
-    NSString *root = [YTMUHistoryRoot().path stringByAppendingString:@"/"];
     NSString *path = url.path;
-    return [path hasPrefix:root] ? [path substringFromIndex:root.length] : nil;
+    NSRange root = [path rangeOfString:@"/Documents/YTMusicUltimate/" options:NSBackwardsSearch];
+    if (root.location == NSNotFound)
+        return nil;
+    NSString *relative = [path substringFromIndex:NSMaxRange(root)];
+    return relative.length ? relative : nil;
 }
 
 static NSArray<NSDictionary *> *YTMUHistoryEntries(void) {

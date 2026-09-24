@@ -384,12 +384,12 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
             chip.layer.cornerRadius = 8;
             [chip setTitle:titles[i] forState:UIControlStateNormal];
             [chip setTitleColor:selected ? [UIColor blackColor] : [UIColor whiteColor] forState:UIControlStateNormal];
-            chip.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+            chip.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
             chip.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
             chip.tag = (NSInteger)i;
             [chip addTarget:self action:@selector(chipTapped:) forControlEvents:UIControlEventTouchUpInside];
             [chip sizeToFit];
-            chip.frame = CGRectMake(x, 0, chip.bounds.size.width, 34);
+            chip.frame = CGRectMake(x, 1, chip.bounds.size.width, 31);
             [self.chipBar addSubview:chip];
             x += chip.bounds.size.width + 8;
         }

@@ -47,7 +47,6 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
 @property (nonatomic) NSInteger topBarFrames;
 @property (nonatomic) BOOL lastOwnPageOnTop;
 @property (nonatomic) BOOL hadAppBar;        // found YTM's bar at least once
-@property (nonatomic) BOOL ownPagePresented; // we presented something that is still up
 @end
 
 #pragma mark - YTM's player while the Downloads tab is open
@@ -191,8 +190,7 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     // Leaving the tab: YTM's logo comes back right away. Our own pages (player,
     // playlist, search...) cover everything, so the bar just stays for them.
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (![self ytmu_ownPageUp])
-            [self layoutTopBar:NO];
+        [self layoutTopBar:[self ytmu_isTabVisible]];
     });
     // Our own playlist page / Now Playing slides over: keep YTM's player hidden
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -218,7 +216,7 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 }
 
 - (void)buildChipHeader {
-    self.chipHeader = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 52)];
+    self.chipHeader = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 48)];
     self.chipBar = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 2, 320, 42)];
     self.chipBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     self.chipBar.showsHorizontalScrollIndicator = NO;
@@ -441,11 +439,10 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
         [self.topBarLink invalidate];
         self.topBarLink = nil;
     }
-    [self layoutTopBar:[self ytmu_isOnScreen] || [self ytmu_ownPageUp]];
+    [self layoutTopBar:[self ytmu_isTabVisible]];
 }
 
 - (void)presentViewController:(UIViewController *)viewController animated:(BOOL)animated completion:(void (^)(void))completion {
-    self.ownPagePresented = YES;
     [self guardTopBar];
     [super presentViewController:viewController animated:animated completion:completion];
 }
@@ -567,8 +564,8 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
     if (title) {
         [chip setTitle:title forState:UIControlStateNormal];
         [chip setTitleColor:foreground forState:UIControlStateNormal];
-        chip.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-        chip.contentEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 14);
+        chip.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+        chip.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
     } else {
         UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
         [chip setImage:[[UIImage systemImageNamed:symbol withConfiguration:config] imageWithTintColor:foreground renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
@@ -596,7 +593,7 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
 
     CGFloat x = 16;
     for (UIButton *chip in chips) {
-        chip.frame = CGRectMake(x, 4, MAX(chip.bounds.size.width, 36), 34);
+        chip.frame = CGRectMake(x, 5, MAX(chip.bounds.size.width, 34), 31);
         [self.chipBar addSubview:chip];
         x += chip.bounds.size.width + 8;
     }
@@ -716,13 +713,24 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
     return hit && [hit isDescendantOfView:self.view];
 }
 
-// One of our pages / menus / share sheets is still up (keeps our top bar)
-- (BOOL)ytmu_ownPageUp {
-    UIWindow *window = self.view.window ?: [UIApplication sharedApplication].keyWindow;
-    BOOL anythingPresented = window.rootViewController.presentedViewController != nil;
-    if (!anythingPresented)
-        self.ownPagePresented = NO;
-    return (self.ownPagePresented && anythingPresented) || [self ytmu_ownScreenOnTop];
+// This tab is the selected one: checked inside YTM's own screen, so anything presented
+// on top (our pages and menus, YTM's account page...) never counts as leaving the tab
+- (BOOL)ytmu_isTabVisible {
+    UIWindow *window = self.view.window;
+    if (!window)
+        return !self.topBar.hidden; // detached behind a full-screen page: unchanged
+    for (UIView *view = self.view; view; view = view.superview) {
+        if (view.hidden || view.alpha < 0.01)
+            return NO;
+    }
+    UIView *root = window.rootViewController.view;
+    if (!root || ![self.view isDescendantOfView:root])
+        return [self ytmu_isOnScreen];
+    CGPoint center = [self.view convertPoint:CGPointMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds)) toView:root];
+    if (!CGRectContainsPoint(root.bounds, center))
+        return NO;
+    UIView *hit = [root hitTest:center withEvent:nil];
+    return hit && [hit isDescendantOfView:self.view];
 }
 
 // Something we opened from this tab is on top (playlist page, Now Playing, menus)
@@ -743,12 +751,14 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
 // Runs every 0.25 s while this tab exists: YTM's player hidden exactly while we're visible
 - (void)syncAppPlayer {
     // One of our pages opened / closed (also ones opened from search, history...)
-    BOOL anyOwnPage = [self ytmu_ownPageUp];
-    if (anyOwnPage != self.lastOwnPageOnTop) {
-        self.lastOwnPageOnTop = anyOwnPage;
+    // Something opened / closed on top: keep the bar on top every frame for a moment
+    UIWindow *window = self.view.window ?: [UIApplication sharedApplication].keyWindow;
+    BOOL somethingOnTop = window.rootViewController.presentedViewController != nil;
+    if (somethingOnTop != self.lastOwnPageOnTop) {
+        self.lastOwnPageOnTop = somethingOnTop;
         [self guardTopBar];
     }
-    [self layoutTopBar:[self ytmu_isOnScreen] || anyOwnPage];
+    [self layoutTopBar:[self ytmu_isTabVisible]];
     if (!self.keepAppPlayer && ([self ytmu_isOnScreen] || (self.hiddenAppPlayerViews.count && [self ytmu_ownScreenOnTop])))
         [self hideAppPlayerForced:NO];
     else
@@ -1082,19 +1092,6 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
 }
 
 #pragma mark Actions
-
-- (void)shareItems:(NSArray *)items from:(UIView *)source {
-    if (items.count == 0)
-        return;
-    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
-    activity.excludedActivityTypes = @[UIActivityTypeAssignToContact, UIActivityTypePrint];
-    UIPopoverPresentationController *popover = activity.popoverPresentationController;
-    if (popover && source) {
-        popover.sourceView = source;
-        popover.sourceRect = source.bounds;
-    }
-    [self presentViewController:activity animated:YES completion:nil];
-}
 
 - (void)confirmDeleteURL:(NSURL *)url name:(NSString *)name extraURL:(NSURL *)extraURL {
     YTAlertView *alertView = [NSClassFromString(@"YTAlertView") confirmationDialogWithAction:^{
