@@ -264,9 +264,61 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
     return order;
 }
 
+- (NSArray<YTMUOfflineTrack *> *)queue {
+    NSMutableArray<YTMUOfflineTrack *> *queue = [NSMutableArray array];
+    for (NSNumber *index in self.order) {
+        if (index.unsignedIntegerValue < self.tracks.count)
+            [queue addObject:self.tracks[index.unsignedIntegerValue]];
+    }
+    return queue;
+}
+
+- (NSInteger)queuePosition {
+    return self.position;
+}
+
+- (void)playQueueIndex:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)self.order.count)
+        return;
+    self.position = index;
+    [self loadCurrentAndPlay:YES];
+}
+
+- (void)moveQueueItemFrom:(NSInteger)from to:(NSInteger)to {
+    NSInteger count = (NSInteger)self.order.count;
+    if (from < 0 || from >= count || to < 0 || to >= count || from == to)
+        return;
+    NSMutableArray<NSNumber *> *order = [self.order mutableCopy];
+    NSNumber *item = order[(NSUInteger)from];
+    [order removeObjectAtIndex:(NSUInteger)from];
+    [order insertObject:item atIndex:(NSUInteger)to];
+    self.order = order;
+    // The playing song keeps playing wherever it ends up
+    if (from == self.position)
+        self.position = to;
+    else if (from < self.position && to >= self.position)
+        self.position--;
+    else if (from > self.position && to <= self.position)
+        self.position++;
+    [self notifyChange];
+}
+
+- (void)addToQueue:(YTMUOfflineTrack *)track {
+    if (!track)
+        return;
+    if (self.tracks.count == 0) {
+        [self playTracks:@[track] startIndex:0 shuffle:NO];
+        return;
+    }
+    self.tracks = [self.tracks arrayByAddingObject:track];
+    self.order = [self.order arrayByAddingObject:@(self.tracks.count - 1)];
+    [self notifyChange];
+}
+
 - (void)playTracks:(NSArray<YTMUOfflineTrack *> *)tracks startIndex:(NSInteger)index shuffle:(BOOL)shuffle {
     if (tracks.count == 0)
         return;
+    self.sourceName = nil; // callers set it after
     self.tracks = tracks;
     self.isShuffled = shuffle;
     NSInteger start = (index >= 0 && index < (NSInteger)tracks.count) ? index : (shuffle ? (NSInteger)arc4random_uniform((uint32_t)tracks.count) : 0);

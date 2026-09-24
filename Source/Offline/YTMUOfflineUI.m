@@ -557,11 +557,20 @@ void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presen
 }
 
 void YTMUShowCollectionMenuWithEdit(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void), void (^onEdit)(void)) {
+    YTMUShowCollectionMenuFull(collection, presenter, source, onDeleted, onEdit, nil);
+}
+
+void YTMUShowCollectionMenuFull(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void), void (^onEdit)(void), void (^onFind)(void)) {
     if (!collection || !presenter)
         return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:collection.name
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
+    if (onFind) {
+        [sheet addAction:[UIAlertAction actionWithTitle:collection.isAlbum ? @"Find in album" : @"Find in playlist" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            onFind();
+        }]];
+    }
     if (onEdit) {
         [sheet addAction:[UIAlertAction actionWithTitle:@"Edit" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             onEdit();
@@ -746,6 +755,23 @@ void YTMUShowCollectionMenuWithEdit(YTMUCollection *collection, UIViewController
 static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     if (!cell.editing)
         return;
+    // The queue keeps YTM's handle on the right
+    if ([cell isKindOfClass:[YTMUTrackCell class]] && ((YTMUTrackCell *)cell).keepsReorderOnRight) {
+        for (UIView *view in cell.subviews) {
+            if (![NSStringFromClass([view class]) containsString:@"Reorder"])
+                continue;
+            UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightRegular];
+            UIImage *handle = [[UIImage systemImageNamed:@"line.3.horizontal" withConfiguration:config] imageWithTintColor:[UIColor whiteColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+            for (UIView *subview in view.subviews) {
+                if ([subview isKindOfClass:[UIImageView class]]) {
+                    ((UIImageView *)subview).image = handle;
+                    subview.contentMode = UIViewContentModeCenter;
+                    subview.frame = view.bounds;
+                }
+            }
+        }
+        return;
+    }
     for (UIView *view in cell.subviews) {
         if (![NSStringFromClass([view class]) containsString:@"Reorder"])
             continue;
@@ -1132,7 +1158,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 
 #pragma mark - Now Playing
 
-@interface YTMUNowPlayingViewController ()
+@interface YTMUNowPlayingViewController () <UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, strong) CAGradientLayer *gradient;
 @property (nonatomic, strong) UIImageView *artworkView;
 @property (nonatomic, strong) UILabel *titleLabel;
@@ -1146,6 +1172,18 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 @property (nonatomic, strong) UIButton *nextButton;
 @property (nonatomic, strong) UIButton *repeatButton;
 @property (nonatomic) BOOL scrubbing;
+// Queue ("Up next"): bottom bar opens it, artwork makes room
+@property (nonatomic, strong) UIView *upNextBar;
+@property (nonatomic, strong) UILabel *upNextLabel;
+@property (nonatomic, strong) UIView *queueView;
+@property (nonatomic, strong) UILabel *queueSourceLabel;
+@property (nonatomic, strong) UITableView *queueTable;
+@property (nonatomic, strong) NSArray<YTMUOfflineTrack *> *queueItems;
+@property (nonatomic, strong) NSLayoutConstraint *artworkAspect;
+@property (nonatomic, strong) NSLayoutConstraint *artworkCollapsed;
+@property (nonatomic, strong) NSLayoutConstraint *titleTop;
+@property (nonatomic) BOOL showingQueue;
+@property (nonatomic) BOOL movingQueueItem;
 @end
 
 @implementation YTMUNowPlayingViewController
@@ -1216,8 +1254,32 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     controls.alignment = UIStackViewAlignmentCenter;
     controls.translatesAutoresizingMaskIntoConstraints = NO;
 
-    for (UIView *view in @[closeButton, self.artworkView, self.titleLabel, self.artistLabel, self.slider, self.elapsedLabel, self.remainingLabel, controls])
+    // Bottom: grabber + song title (cut with …), tap / swipe up = queue
+    self.upNextBar = [UIView new];
+    self.upNextBar.translatesAutoresizingMaskIntoConstraints = NO;
+    UIView *grabber = [UIView new];
+    grabber.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.3];
+    grabber.layer.cornerRadius = 2.5;
+    grabber.translatesAutoresizingMaskIntoConstraints = NO;
+    self.upNextLabel = YTMULabel([UIFont systemFontOfSize:15 weight:UIFontWeightSemibold], YTMUSecondaryText());
+    self.upNextLabel.textAlignment = NSTextAlignmentCenter;
+    self.upNextLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self.upNextBar addSubview:grabber];
+    [self.upNextBar addSubview:self.upNextLabel];
+    [self.upNextBar addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(showQueue)]];
+    UISwipeGestureRecognizer *swipeUp = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(showQueue)];
+    swipeUp.direction = UISwipeGestureRecognizerDirectionUp;
+    [self.upNextBar addGestureRecognizer:swipeUp];
+
+    [self buildQueueView];
+
+    for (UIView *view in @[closeButton, self.artworkView, self.titleLabel, self.artistLabel, self.slider, self.elapsedLabel, self.remainingLabel, controls, self.upNextBar, self.queueView])
         [self.view addSubview:view];
+    [self.view bringSubviewToFront:menuButton];
+
+    self.artworkAspect = [self.artworkView.heightAnchor constraintEqualToAnchor:self.artworkView.widthAnchor];
+    self.artworkCollapsed = [self.artworkView.heightAnchor constraintEqualToConstant:0];
+    self.titleTop = [self.titleLabel.topAnchor constraintEqualToAnchor:self.artworkView.bottomAnchor constant:36];
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -1229,9 +1291,9 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
         [self.artworkView.topAnchor constraintEqualToAnchor:closeButton.bottomAnchor constant:28],
         [self.artworkView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:28],
         [self.artworkView.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-28],
-        [self.artworkView.heightAnchor constraintEqualToAnchor:self.artworkView.widthAnchor],
+        self.artworkAspect,
 
-        [self.titleLabel.topAnchor constraintEqualToAnchor:self.artworkView.bottomAnchor constant:36],
+        self.titleTop,
         [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.artworkView.leadingAnchor],
         [self.titleLabel.trailingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor],
 
@@ -1251,18 +1313,41 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
         [controls.topAnchor constraintEqualToAnchor:self.elapsedLabel.bottomAnchor constant:22],
         [controls.leadingAnchor constraintEqualToAnchor:self.artworkView.leadingAnchor],
         [controls.trailingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor],
-        [controls.bottomAnchor constraintLessThanOrEqualToAnchor:safe.bottomAnchor constant:-20]
+        [controls.bottomAnchor constraintLessThanOrEqualToAnchor:self.upNextBar.topAnchor constant:-12],
+
+        [self.upNextBar.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:40],
+        [self.upNextBar.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-40],
+        [self.upNextBar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+        [self.upNextBar.heightAnchor constraintEqualToConstant:60],
+        [grabber.topAnchor constraintEqualToAnchor:self.upNextBar.topAnchor constant:10],
+        [grabber.centerXAnchor constraintEqualToAnchor:self.upNextBar.centerXAnchor],
+        [grabber.widthAnchor constraintEqualToConstant:36],
+        [grabber.heightAnchor constraintEqualToConstant:5],
+        [self.upNextLabel.topAnchor constraintEqualToAnchor:grabber.bottomAnchor constant:14],
+        [self.upNextLabel.leadingAnchor constraintEqualToAnchor:self.upNextBar.leadingAnchor],
+        [self.upNextLabel.trailingAnchor constraintEqualToAnchor:self.upNextBar.trailingAnchor],
+
+        [self.queueView.topAnchor constraintEqualToAnchor:controls.bottomAnchor constant:16],
+        [self.queueView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.queueView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.queueView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
     ]];
 
     // Swipe down closes, like YTM
     UISwipeGestureRecognizer *swipe = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(close)];
     swipe.direction = UISwipeGestureRecognizerDirectionDown;
+    swipe.delegate = self;
     [self.view addGestureRecognizer:swipe];
 
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
     [center addObserver:self selector:@selector(refresh) name:YTMUOfflinePlayerDidChangeNotification object:nil];
     [center addObserver:self selector:@selector(refreshProgress) name:YTMUOfflinePlayerProgressNotification object:nil];
     [self refresh];
+}
+
+// Scrolling the queue must not close the player
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    return ![touch.view isDescendantOfView:self.queueTable];
 }
 
 - (void)dealloc {
@@ -1285,6 +1370,8 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     self.artworkView.image = track.artwork;
     self.titleLabel.text = track.title;
     self.artistLabel.text = track.artist;
+    self.upNextLabel.text = track.title;
+    [self reloadQueue];
     self.gradient.colors = @[(id)YTMUGradientTop(track.artwork).CGColor, (id)YTMUBackground().CGColor];
 
     UIImageSymbolConfiguration *playConfig = [UIImageSymbolConfiguration configurationWithPointSize:32 weight:UIImageSymbolWeightSemibold];
@@ -1354,13 +1441,176 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     [sheet addAction:[UIAlertAction actionWithTitle:@"Open folder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         YTMUOpenInFiles([track.url URLByDeletingLastPathComponent]);
     }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Add to queue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [[YTMUOfflinePlayer shared] addToQueue:track];
+    }]];
+    // Stops everything: players disappear like nothing was played yet
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Dismiss queue" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [[YTMUOfflinePlayer shared] stop];
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     sheet.popoverPresentationController.sourceView = sender;
     sheet.popoverPresentationController.sourceRect = sender.bounds;
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
+#pragma mark Queue
+
+- (void)buildQueueView {
+    self.queueView = [UIView new];
+    self.queueView.backgroundColor = YTMUBackground();
+    self.queueView.alpha = 0;
+    self.queueView.hidden = YES;
+    self.queueView.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIView *grabber = [UIView new];
+    grabber.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.3];
+    grabber.layer.cornerRadius = 2.5;
+    grabber.translatesAutoresizingMaskIntoConstraints = NO;
+    UILabel *playingFrom = YTMULabel([UIFont systemFontOfSize:14], YTMUSecondaryText());
+    playingFrom.text = @"Playing from";
+    self.queueSourceLabel = YTMULabel([UIFont systemFontOfSize:16 weight:UIFontWeightSemibold], [UIColor whiteColor]);
+
+    // Tap / swipe down on the header: back to the big artwork
+    UIView *header = [UIView new];
+    header.translatesAutoresizingMaskIntoConstraints = NO;
+    [header addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(hideQueue)]];
+    UISwipeGestureRecognizer *swipeDown = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(hideQueue)];
+    swipeDown.direction = UISwipeGestureRecognizerDirectionDown;
+    [header addGestureRecognizer:swipeDown];
+    for (UIView *view in @[grabber, playingFrom, self.queueSourceLabel])
+        [header addSubview:view];
+
+    self.queueTable = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    self.queueTable.backgroundColor = [UIColor clearColor];
+    self.queueTable.separatorStyle = UITableViewCellSeparatorStyleNone;
+    self.queueTable.dataSource = self;
+    self.queueTable.delegate = self;
+    self.queueTable.rowHeight = UITableViewAutomaticDimension;
+    self.queueTable.estimatedRowHeight = 64;
+    self.queueTable.allowsSelectionDuringEditing = YES;
+    self.queueTable.editing = YES; // handles always on, like YTM
+    self.queueTable.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.queueTable registerClass:[YTMUTrackCell class] forCellReuseIdentifier:@"queue"];
+
+    [self.queueView addSubview:header];
+    [self.queueView addSubview:self.queueTable];
+    [NSLayoutConstraint activateConstraints:@[
+        [header.topAnchor constraintEqualToAnchor:self.queueView.topAnchor],
+        [header.leadingAnchor constraintEqualToAnchor:self.queueView.leadingAnchor],
+        [header.trailingAnchor constraintEqualToAnchor:self.queueView.trailingAnchor],
+        [grabber.topAnchor constraintEqualToAnchor:header.topAnchor constant:8],
+        [grabber.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
+        [grabber.widthAnchor constraintEqualToConstant:36],
+        [grabber.heightAnchor constraintEqualToConstant:5],
+        [playingFrom.topAnchor constraintEqualToAnchor:grabber.bottomAnchor constant:14],
+        [playingFrom.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:16],
+        [self.queueSourceLabel.topAnchor constraintEqualToAnchor:playingFrom.bottomAnchor constant:2],
+        [self.queueSourceLabel.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:16],
+        [self.queueSourceLabel.trailingAnchor constraintLessThanOrEqualToAnchor:header.trailingAnchor constant:-16],
+        [self.queueSourceLabel.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-8],
+
+        [self.queueTable.topAnchor constraintEqualToAnchor:header.bottomAnchor],
+        [self.queueTable.leadingAnchor constraintEqualToAnchor:self.queueView.leadingAnchor],
+        [self.queueTable.trailingAnchor constraintEqualToAnchor:self.queueView.trailingAnchor],
+        [self.queueTable.bottomAnchor constraintEqualToAnchor:self.queueView.bottomAnchor]
+    ]];
+}
+
+- (void)reloadQueue {
+    if (!self.showingQueue || self.movingQueueItem)
+        return;
+    YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+    self.queueItems = player.queue;
+    self.queueSourceLabel.text = player.sourceName.length ? player.sourceName : @"Downloads";
+    [self.queueTable reloadData];
+}
+
+- (void)showQueue {
+    if (self.showingQueue)
+        return;
+    self.showingQueue = YES;
+    [self reloadQueue];
+    self.queueView.hidden = NO;
+    self.artworkAspect.active = NO;
+    self.artworkCollapsed.active = YES;
+    self.titleTop.constant = 4;
+    [UIView animateWithDuration:0.3 animations:^{
+        self.artworkView.alpha = 0;
+        self.upNextBar.alpha = 0;
+        self.queueView.alpha = 1;
+        [self.view layoutIfNeeded];
+    }];
+    // Current song at the top of the list
+    NSInteger position = [YTMUOfflinePlayer shared].queuePosition;
+    if (position >= 0 && position < (NSInteger)self.queueItems.count)
+        [self.queueTable scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:position inSection:0] atScrollPosition:UITableViewScrollPositionTop animated:NO];
+}
+
+- (void)hideQueue {
+    if (!self.showingQueue)
+        return;
+    self.showingQueue = NO;
+    self.artworkCollapsed.active = NO;
+    self.artworkAspect.active = YES;
+    self.titleTop.constant = 36;
+    [UIView animateWithDuration:0.3 animations:^{
+        self.artworkView.alpha = 1;
+        self.upNextBar.alpha = 1;
+        self.queueView.alpha = 0;
+        [self.view layoutIfNeeded];
+    } completion:^(BOOL finished) {
+        if (!self.showingQueue)
+            self.queueView.hidden = YES;
+    }];
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.queueItems.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    YTMUTrackCell *cell = [tableView dequeueReusableCellWithIdentifier:@"queue" forIndexPath:indexPath];
+    cell.keepsReorderOnRight = YES;
+    YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+    BOOL isCurrent = indexPath.row == player.queuePosition;
+    [cell configureWithTrack:self.queueItems[(NSUInteger)indexPath.row] isCurrent:isCurrent isPlaying:player.isPlaying];
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    [[YTMUOfflinePlayer shared] playQueueIndex:indexPath.row];
+}
+
+- (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
+    return YES;
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    return UITableViewCellEditingStyleNone;
+}
+
+- (BOOL)tableView:(UITableView *)tableView shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    return NO;
+}
+
+- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)source toIndexPath:(NSIndexPath *)destination {
+    // The table already shows the new order: don't reload it in the middle of the move
+    self.movingQueueItem = YES;
+    [[YTMUOfflinePlayer shared] moveQueueItemFrom:source.row to:destination.row];
+    self.movingQueueItem = NO;
+    self.queueItems = [YTMUOfflinePlayer shared].queue;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.queueTable reloadData]; // equalizer follows the playing song
+    });
+}
+
 - (void)close {
+    if (self.showingQueue) {
+        [self hideQueue];
+        return;
+    }
     if (self.presentingViewController && !self.isBeingDismissed)
         [self dismissViewControllerAnimated:YES completion:nil];
 }
@@ -1386,6 +1636,9 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 @property (nonatomic, strong) UIButton *backButton;
 @property (nonatomic, strong) UIView *editBar;
 @property (nonatomic, strong) NSArray<YTMUOfflineTrack *> *tracksBeforeEdit;
+@property (nonatomic, strong) UIView *findBar;
+@property (nonatomic, strong) UITextField *findField;
+@property (nonatomic, strong) NSArray<YTMUOfflineTrack *> *foundTracks; // nil = not searching
 @property (nonatomic) BOOL detailsExpanded;
 @end
 
@@ -1470,6 +1723,62 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
         [doneEdit.centerYAnchor constraintEqualToAnchor:cancelEdit.centerYAnchor]
     ]];
 
+    // "Find in playlist": search field over the top, the list filters live
+    self.findBar = [UIView new];
+    self.findBar.backgroundColor = YTMUBackground();
+    self.findBar.hidden = YES;
+    self.findBar.translatesAutoresizingMaskIntoConstraints = NO;
+    UIView *fieldBox = [UIView new];
+    fieldBox.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.13];
+    fieldBox.layer.cornerRadius = 20;
+    fieldBox.translatesAutoresizingMaskIntoConstraints = NO;
+    UIImageView *glass = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"magnifyingglass"]];
+    glass.tintColor = YTMUSecondaryText();
+    glass.translatesAutoresizingMaskIntoConstraints = NO;
+    self.findField = [UITextField new];
+    self.findField.font = [UIFont systemFontOfSize:17];
+    self.findField.textColor = [UIColor whiteColor];
+    self.findField.tintColor = [UIColor whiteColor];
+    self.findField.keyboardAppearance = UIKeyboardAppearanceDark;
+    self.findField.returnKeyType = UIReturnKeySearch;
+    self.findField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    self.findField.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.findField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:self.collection.isAlbum ? @"Find in album" : @"Find in playlist"
+                                                                            attributes:@{NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:0.55]}];
+    self.findField.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.findField addTarget:self action:@selector(findChanged) forControlEvents:UIControlEventEditingChanged];
+    [self.findField addTarget:self.findField action:@selector(resignFirstResponder) forControlEvents:UIControlEventEditingDidEndOnExit];
+    UIButton *cancelFind = [UIButton buttonWithType:UIButtonTypeSystem];
+    [cancelFind setTitle:@"Cancel" forState:UIControlStateNormal];
+    [cancelFind setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    cancelFind.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightMedium];
+    cancelFind.translatesAutoresizingMaskIntoConstraints = NO;
+    [cancelFind setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [cancelFind addTarget:self action:@selector(stopFinding) forControlEvents:UIControlEventTouchUpInside];
+    [fieldBox addSubview:glass];
+    [fieldBox addSubview:self.findField];
+    [self.findBar addSubview:fieldBox];
+    [self.findBar addSubview:cancelFind];
+    [self.view addSubview:self.findBar];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.findBar.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.findBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.findBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.findBar.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:56],
+        [fieldBox.leadingAnchor constraintEqualToAnchor:self.findBar.leadingAnchor constant:16],
+        [fieldBox.bottomAnchor constraintEqualToAnchor:self.findBar.bottomAnchor constant:-8],
+        [fieldBox.heightAnchor constraintEqualToConstant:40],
+        [fieldBox.trailingAnchor constraintEqualToAnchor:cancelFind.leadingAnchor constant:-12],
+        [cancelFind.trailingAnchor constraintEqualToAnchor:self.findBar.trailingAnchor constant:-16],
+        [cancelFind.centerYAnchor constraintEqualToAnchor:fieldBox.centerYAnchor],
+        [glass.leadingAnchor constraintEqualToAnchor:fieldBox.leadingAnchor constant:12],
+        [glass.centerYAnchor constraintEqualToAnchor:fieldBox.centerYAnchor],
+        [self.findField.leadingAnchor constraintEqualToAnchor:glass.trailingAnchor constant:8],
+        [self.findField.trailingAnchor constraintEqualToAnchor:fieldBox.trailingAnchor constant:-8],
+        [self.findField.topAnchor constraintEqualToAnchor:fieldBox.topAnchor],
+        [self.findField.bottomAnchor constraintEqualToAnchor:fieldBox.bottomAnchor]
+    ]];
+
     [NSLayoutConstraint activateConstraints:@[
         [self.tableView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -1494,6 +1803,10 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     self.tableView.tableFooterView = self.spinner;
 
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerChanged) name:YTMUOfflinePlayerDidChangeNotification object:nil];
+    if (self.startsFinding)
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self startFinding];
+        });
     if (!self.collection.kind && self.collection.folder)
         YTMURecordHistory(self.collection.folder, YES);
     [self loadTracks];
@@ -1701,13 +2014,62 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 - (void)showMenu:(UIButton *)sender {
     __weak __typeof(self) weakSelf = self;
     // Edit (reorder) only for real playlists / albums
-    YTMUShowCollectionMenuWithEdit(self.collection, self, sender, ^{
+    YTMUShowCollectionMenuFull(self.collection, self, sender, ^{
         if (weakSelf.onChange)
             weakSelf.onChange();
         [weakSelf dismissViewControllerAnimated:YES completion:nil];
     }, self.collection.kind ? nil : ^{
         [weakSelf startEditing];
+    }, ^{
+        [weakSelf startFinding];
     });
+}
+
+#pragma mark Find in playlist
+
+- (NSArray<YTMUOfflineTrack *> *)visibleTracks {
+    return self.foundTracks ?: self.tracks;
+}
+
+- (void)startFinding {
+    if (self.tableView.editing)
+        return;
+    self.findBar.hidden = NO;
+    self.backButton.hidden = YES;
+    self.findField.text = @"";
+    self.foundTracks = self.tracks;
+    [self.tableView reloadData];
+    [self.findField becomeFirstResponder];
+}
+
+- (void)stopFinding {
+    [self.findField resignFirstResponder];
+    self.findBar.hidden = YES;
+    self.backButton.hidden = NO;
+    self.foundTracks = nil;
+    [self.tableView reloadData];
+}
+
+- (void)findChanged {
+    NSString *query = [self.findField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (query.length == 0) {
+        self.foundTracks = self.tracks;
+    } else {
+        NSArray<NSString *> *words = [query componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSMutableArray<YTMUOfflineTrack *> *found = [NSMutableArray array];
+        for (YTMUOfflineTrack *track in self.tracks) {
+            NSString *text = [NSString stringWithFormat:@"%@ %@ %@", track.title ?: @"", track.artist ?: @"", track.album ?: @""];
+            BOOL all = YES;
+            for (NSString *word in words) {
+                if (word.length && [text rangeOfString:word options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location == NSNotFound)
+                    all = NO;
+            }
+            if (all)
+                [found addObject:track];
+        }
+        self.foundTracks = found;
+    }
+    [self.tableView reloadData];
 }
 
 #pragma mark Edit (reorder songs)
@@ -1715,19 +2077,29 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 - (void)startEditing {
     if (self.tracks.count < 2)
         return;
+    if (self.foundTracks)
+        [self stopFinding];
     self.tracksBeforeEdit = self.tracks;
     self.editBar.hidden = NO;
     self.backButton.hidden = YES;
-    [self.tableView setEditing:YES animated:YES];
-    // Straight to the songs
-    [self.tableView scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0] atScrollPosition:UITableViewScrollPositionTop animated:YES];
+    [self setTableEditingKeepingPosition:YES];
+}
+
+// Switching edit mode must not move the list
+- (void)setTableEditingKeepingPosition:(BOOL)editing {
+    CGPoint offset = self.tableView.contentOffset;
+    [UIView performWithoutAnimation:^{
+        [self.tableView setEditing:editing animated:NO];
+        [self.tableView reloadData];
+        [self.tableView layoutIfNeeded];
+        self.tableView.contentOffset = offset;
+    }];
 }
 
 - (void)endEditing {
     self.editBar.hidden = YES;
     self.backButton.hidden = NO;
-    [self.tableView setEditing:NO animated:YES];
-    [self.tableView reloadData];
+    [self setTableEditingKeepingPosition:NO];
 }
 
 - (void)cancelEditing {
@@ -1800,10 +2172,12 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 
 - (void)playAll {
     [[YTMUOfflinePlayer shared] playTracks:self.tracks startIndex:0 shuffle:NO];
+    [YTMUOfflinePlayer shared].sourceName = self.collection.name;
 }
 
 - (void)shuffleAll {
     [[YTMUOfflinePlayer shared] playTracks:self.tracks startIndex:-1 shuffle:YES];
+    [YTMUOfflinePlayer shared].sourceName = self.collection.name;
 }
 
 - (void)shareAll:(UIButton *)sender {
@@ -1813,12 +2187,12 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 #pragma mark Table
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return (NSInteger)self.tracks.count;
+    return (NSInteger)self.visibleTracks.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     YTMUTrackCell *cell = [tableView dequeueReusableCellWithIdentifier:@"track" forIndexPath:indexPath];
-    YTMUOfflineTrack *track = self.tracks[(NSUInteger)indexPath.row];
+    YTMUOfflineTrack *track = self.visibleTracks[(NSUInteger)indexPath.row];
     YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
     BOOL isCurrent = [player.currentTrack.url isEqual:track.url];
     [cell configureWithTrack:track isCurrent:isCurrent isPlaying:player.isPlaying];
@@ -1832,11 +2206,19 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
-    [player playTracks:self.tracks startIndex:indexPath.row shuffle:player.isShuffled];
+    // Found songs play within the whole playlist
+    YTMUOfflineTrack *track = self.visibleTracks[(NSUInteger)indexPath.row];
+    NSUInteger index = [self.tracks indexOfObject:track];
+    [self.findField resignFirstResponder];
+    [player playTracks:self.tracks startIndex:index == NSNotFound ? 0 : (NSInteger)index shuffle:player.isShuffled];
+    player.sourceName = self.collection.name;
 }
 
 - (void)showMenuForTrack:(YTMUOfflineTrack *)track from:(UIButton *)sender {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:track.title message:track.artist preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Add to queue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [[YTMUOfflinePlayer shared] addToQueue:track];
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         YTMUShare(@[track.url], self, sender);
     }]];
@@ -1862,6 +2244,11 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
         NSMutableArray *tracks = [self.tracks mutableCopy];
         [tracks removeObject:track];
         self.tracks = tracks;
+        if (self.foundTracks) {
+            NSMutableArray *found = [self.foundTracks mutableCopy];
+            [found removeObject:track];
+            self.foundTracks = found;
+        }
         if (self.collection.folder) {
             self.collection.files = [YTMUCollection audioFilesInFolder:self.collection.folder];
         } else {
