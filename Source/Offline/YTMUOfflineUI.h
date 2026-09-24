@@ -31,6 +31,12 @@
 + (NSArray<YTMUCollection *> *)creatorsFromCollections:(NSArray<YTMUCollection *> *)collections;
 @end
 
+#pragma mark - Custom order (Edit), saved by file / folder name
+
+FOUNDATION_EXPORT NSArray<NSURL *> *YTMUApplySavedOrder(NSArray<NSURL *> *urls, NSString *key);
+FOUNDATION_EXPORT void YTMUSaveOrder(NSArray<NSURL *> *urls, NSString *key);
+FOUNDATION_EXPORT NSString *YTMUTrackOrderKey(NSURL *folder); // songs of a folder ("collections" = folders)
+
 #pragma mark - Shared helpers
 
 FOUNDATION_EXPORT UIColor *YTMUAverageColor(UIImage *image);
@@ -53,6 +59,7 @@ FOUNDATION_EXPORT NSString *YTMUFormatTime(NSTimeInterval seconds);
 
 @interface YTMUTrackCell : UITableViewCell
 @property (nonatomic, copy) void (^onMenu)(UIButton *sender); // ⋮ shown only when set
+- (void)setSubtitleText:(NSString *)text; // after configure: custom second line
 - (void)configureWithTrack:(YTMUOfflineTrack *)track isCurrent:(BOOL)isCurrent isPlaying:(BOOL)isPlaying;
 @end
 
@@ -85,3 +92,5 @@ FOUNDATION_EXPORT void YTMUOpenInFiles(NSURL *folder);
 
 // Share / Delete download sheet for a downloaded playlist or album
 FOUNDATION_EXPORT void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void));
+// Same, with "Edit" on top (reorder the songs)
+FOUNDATION_EXPORT void YTMUShowCollectionMenuWithEdit(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void), void (^onEdit)(void));

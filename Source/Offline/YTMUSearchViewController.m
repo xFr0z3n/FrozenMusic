@@ -110,10 +110,13 @@ static BOOL YTMUMatches(NSString *text, NSArray<NSString *> *words) {
 
 #pragma mark - Search screen
 
+// Same order as YTM: artists, albums, songs (then playlists and their creators)
 typedef NS_ENUM(NSInteger, YTMUSearchSection) {
-    YTMUSearchSectionSongs = 0,
-    YTMUSearchSectionCollections,
-    YTMUSearchSectionPeople,
+    YTMUSearchSectionArtists = 0,
+    YTMUSearchSectionAlbums,
+    YTMUSearchSectionSongs,
+    YTMUSearchSectionPlaylists,
+    YTMUSearchSectionCreators,
     YTMUSearchSectionCount
 };
 
@@ -121,11 +124,13 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
 @property (nonatomic, strong) NSURL *root;
 @property (nonatomic, strong) NSArray<YTMUCollection *> *collections;
 @property (nonatomic, strong) NSArray<YTMUOfflineTrack *> *library;
-@property (nonatomic, strong) NSArray<YTMUCollection *> *people;
+@property (nonatomic, strong) NSArray<YTMUCollection *> *artists;
+@property (nonatomic, strong) NSArray<YTMUCollection *> *creators;
 @property (nonatomic, strong) NSArray<NSString *> *history;
-@property (nonatomic, strong) NSArray<YTMUOfflineTrack *> *songResults;
-@property (nonatomic, strong) NSArray<YTMUCollection *> *collectionResults;
-@property (nonatomic, strong) NSArray<YTMUCollection *> *peopleResults;
+@property (nonatomic, strong) NSArray<NSArray *> *results; // one array per YTMUSearchSection
+@property (nonatomic) NSInteger chipSection;              // -1 = all
+@property (nonatomic, strong) UIScrollView *chipBar;
+@property (nonatomic, strong) NSLayoutConstraint *chipBarHeight;
 @property (nonatomic, strong) UITextField *field;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UILabel *emptyLabel;
@@ -140,10 +145,10 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
         _root = root;
         _collections = collections ?: @[];
         _library = library;
-        _people = @[];
-        _songResults = @[];
-        _collectionResults = @[];
-        _peopleResults = @[];
+        _artists = @[];
+        _creators = @[];
+        _results = @[@[], @[], @[], @[], @[]];
+        _chipSection = -1;
     }
     return self;
 }
@@ -215,9 +220,16 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
     self.emptyLabel.hidden = YES;
     self.emptyLabel.translatesAutoresizingMaskIntoConstraints = NO;
 
+    // Result chips (Artists, Albums, Songs, ...) like YTM
+    self.chipBar = [UIScrollView new];
+    self.chipBar.showsHorizontalScrollIndicator = NO;
+    self.chipBar.translatesAutoresizingMaskIntoConstraints = NO;
+
     [self.view addSubview:self.tableView];
     [self.view addSubview:bar];
+    [self.view addSubview:self.chipBar];
     [self.view addSubview:self.emptyLabel];
+    self.chipBarHeight = [self.chipBar.heightAnchor constraintEqualToConstant:0];
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -236,7 +248,12 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
         [self.field.topAnchor constraintEqualToAnchor:bar.topAnchor],
         [self.field.bottomAnchor constraintEqualToAnchor:bar.bottomAnchor],
 
-        [self.tableView.topAnchor constraintEqualToAnchor:bar.bottomAnchor constant:6],
+        [self.chipBar.topAnchor constraintEqualToAnchor:bar.bottomAnchor constant:8],
+        [self.chipBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.chipBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        self.chipBarHeight,
+
+        [self.tableView.topAnchor constraintEqualToAnchor:self.chipBar.bottomAnchor constant:2],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.tableView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
@@ -278,11 +295,12 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
     NSURL *root = self.root;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSArray<YTMUOfflineTrack *> *library = known ?: [YTMUCollection libraryTracksInFolder:root collections:collections];
-        NSMutableArray<YTMUCollection *> *people = [[YTMUCollection artistsFromCollections:collections library:library] mutableCopy];
-        [people addObjectsFromArray:[YTMUCollection creatorsFromCollections:collections]];
+        NSArray<YTMUCollection *> *artists = [YTMUCollection artistsFromCollections:collections library:library];
+        NSArray<YTMUCollection *> *creators = [YTMUCollection creatorsFromCollections:collections];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.library = library;
-            self.people = people;
+            self.artists = artists;
+            self.creators = creators;
             [self updateResults];
         });
     });
@@ -296,6 +314,8 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
     if (!self.isSearching) {
         self.history = YTMUSearchHistory();
         self.emptyLabel.hidden = YES;
+        self.chipSection = -1;
+        [self rebuildChips];
         [self.tableView reloadData];
         return;
     }
@@ -303,28 +323,84 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
     NSArray<NSString *> *words = [[YTMUFold(self.field.text) componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]];
 
     NSMutableArray<YTMUOfflineTrack *> *songs = [NSMutableArray array];
+    NSMutableSet<NSString *> *songPaths = [NSMutableSet set];
     for (YTMUOfflineTrack *track in self.library) {
         NSString *text = [NSString stringWithFormat:@"%@ %@ %@", track.title ?: @"", track.artist ?: @"", track.album ?: @""];
-        if (YTMUMatches(text, words))
+        if (YTMUMatches(text, words) && ![songPaths containsObject:track.url.path]) {
             [songs addObject:track];
+            [songPaths addObject:track.url.path];
+        }
     }
-    NSMutableArray<YTMUCollection *> *collections = [NSMutableArray array];
+    // Name matches, or it holds one of the songs found ("blind spot" -> C418, his album)
+    BOOL (^holdsSong)(YTMUCollection *) = ^BOOL(YTMUCollection *collection) {
+        for (NSURL *file in collection.files) {
+            if ([songPaths containsObject:file.path])
+                return YES;
+        }
+        return NO;
+    };
+    NSMutableArray<YTMUCollection *> *artists = [NSMutableArray array];
+    for (YTMUCollection *artist in self.artists) {
+        if (YTMUMatches(artist.name, words) || holdsSong(artist))
+            [artists addObject:artist];
+    }
+    NSMutableArray<YTMUCollection *> *albums = [NSMutableArray array];
+    NSMutableArray<YTMUCollection *> *playlists = [NSMutableArray array];
     for (YTMUCollection *collection in self.collections) {
         NSString *text = [NSString stringWithFormat:@"%@ %@", collection.name ?: @"", collection.isAlbum ? (collection.artist ?: @"") : @""];
-        if (YTMUMatches(text, words))
-            [collections addObject:collection];
+        if (YTMUMatches(text, words) || holdsSong(collection))
+            [(collection.isAlbum ? albums : playlists) addObject:collection];
     }
-    NSMutableArray<YTMUCollection *> *people = [NSMutableArray array];
-    for (YTMUCollection *person in self.people) {
-        if (YTMUMatches(person.name, words))
-            [people addObject:person];
+    NSMutableArray<YTMUCollection *> *creators = [NSMutableArray array];
+    for (YTMUCollection *creator in self.creators) {
+        if (YTMUMatches(creator.name, words) || holdsSong(creator))
+            [creators addObject:creator];
     }
 
-    self.songResults = songs;
-    self.collectionResults = collections;
-    self.peopleResults = people;
+    self.results = @[artists, albums, songs, playlists, creators];
+    NSUInteger total = artists.count + albums.count + songs.count + playlists.count + creators.count;
+    if (self.chipSection >= 0 && [self.results[(NSUInteger)self.chipSection] count] == 0)
+        self.chipSection = -1;
     // Library still loading counts as "not found yet" only once it's there
-    self.emptyLabel.hidden = !self.library || songs.count + collections.count + people.count > 0;
+    self.emptyLabel.hidden = !self.library || total > 0;
+    [self rebuildChips];
+    [self.tableView reloadData];
+}
+
+#pragma mark Chips
+
+- (void)rebuildChips {
+    for (UIView *view in self.chipBar.subviews)
+        [view removeFromSuperview];
+    NSArray<NSString *> *titles = @[@"Artists", @"Albums", @"Songs", @"Playlists", @"Creators"];
+    CGFloat x = 16;
+    if (self.isSearching) {
+        for (NSUInteger i = 0; i < titles.count; i++) {
+            if ([self.results[i] count] == 0)
+                continue;
+            BOOL selected = self.chipSection == (NSInteger)i;
+            UIButton *chip = [UIButton buttonWithType:UIButtonTypeCustom];
+            chip.backgroundColor = selected ? [UIColor colorWithWhite:0.94 alpha:1.0] : [UIColor colorWithWhite:1.0 alpha:0.12];
+            chip.layer.cornerRadius = 8;
+            [chip setTitle:titles[i] forState:UIControlStateNormal];
+            [chip setTitleColor:selected ? [UIColor blackColor] : [UIColor whiteColor] forState:UIControlStateNormal];
+            chip.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+            chip.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
+            chip.tag = (NSInteger)i;
+            [chip addTarget:self action:@selector(chipTapped:) forControlEvents:UIControlEventTouchUpInside];
+            [chip sizeToFit];
+            chip.frame = CGRectMake(x, 0, chip.bounds.size.width, 34);
+            [self.chipBar addSubview:chip];
+            x += chip.bounds.size.width + 8;
+        }
+    }
+    self.chipBar.contentSize = CGSizeMake(x + 8, 34);
+    self.chipBarHeight.constant = x > 16 ? 34 : 0;
+}
+
+- (void)chipTapped:(UIButton *)chip {
+    self.chipSection = (self.chipSection == chip.tag) ? -1 : chip.tag;
+    [self rebuildChips];
     [self.tableView reloadData];
 }
 
@@ -343,16 +419,12 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
 - (NSArray *)itemsInSection:(NSInteger)section {
     if (!self.isSearching)
         return self.history;
-    switch (section) {
-        case YTMUSearchSectionSongs:
-            return self.songResults;
-        case YTMUSearchSectionCollections:
-            return self.collectionResults;
-        case YTMUSearchSectionPeople:
-            return self.peopleResults;
-        default:
-            return @[];
-    }
+    if (section < 0 || section >= (NSInteger)self.results.count)
+        return @[];
+    // A chip shows only its own section
+    if (self.chipSection >= 0 && section != self.chipSection)
+        return @[];
+    return self.results[(NSUInteger)section];
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -362,7 +434,7 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
 - (NSString *)titleForSection:(NSInteger)section {
     if (!self.isSearching || [self itemsInSection:section].count == 0)
         return nil;
-    return @[@"Songs", @"Playlists & albums", @"Artists & creators"][(NSUInteger)section];
+    return @[@"Artists", @"Albums", @"Songs", @"Playlists", @"Creators"][(NSUInteger)section];
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
@@ -373,7 +445,7 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
     header.backgroundColor = self.view.backgroundColor;
     UILabel *label = [UILabel new];
     label.text = title;
-    label.font = [UIFont systemFontOfSize:20 weight:UIFontWeightBold];
+    label.font = [UIFont systemFontOfSize:26 weight:UIFontWeightBold];
     label.textColor = [UIColor whiteColor];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     [header addSubview:label];
@@ -414,6 +486,14 @@ typedef NS_ENUM(NSInteger, YTMUSearchSection) {
         YTMUTrackCell *cell = [tableView dequeueReusableCellWithIdentifier:@"track" forIndexPath:indexPath];
         YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
         [cell configureWithTrack:track isCurrent:[player.currentTrack.url isEqual:track.url] isPlaying:player.isPlaying];
+        // "C418 • Minecraft - Volume Beta" like YTM's search
+        NSMutableArray<NSString *> *parts = [NSMutableArray array];
+        if (track.artist.length)
+            [parts addObject:track.artist];
+        if (track.album.length)
+            [parts addObject:track.album];
+        if (parts.count)
+            [cell setSubtitleText:[parts componentsJoinedByString:@" • "]];
         cell.onMenu = ^(UIButton *sender) {
             [weakSelf showMenuForTrack:track from:sender];
         };

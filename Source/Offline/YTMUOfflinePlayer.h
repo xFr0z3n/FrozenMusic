@@ -9,6 +9,9 @@ FOUNDATION_EXPORT NSString *const YTMUOfflinePlayerProgressNotification;
 // Implemented in Downloading.x: pauses YouTube Music's own player
 FOUNDATION_EXPORT void YTMUPauseAppPlayer(void);
 
+// Implemented in YTMUHistory.m: remembers played songs / opened playlists for "History"
+FOUNDATION_EXPORT void YTMURecordHistory(NSURL *url, BOOL isCollection);
+
 // Lock screen / Control Center ownership (used by the hooks in YTMURemoteGuard.x
 // and Downloading.x so YTM's own handlers stay quiet while offline music is on)
 FOUNDATION_EXPORT BOOL YTMUOfflinePlayerOwnsRemote(void);
