@@ -46,6 +46,8 @@ typedef NS_ENUM(NSInteger, YTMUDownloadsSection) {
 @property (nonatomic, strong) CADisplayLink *topBarLink; // every frame during transitions
 @property (nonatomic) NSInteger topBarFrames;
 @property (nonatomic) BOOL lastOwnPageOnTop;
+@property (nonatomic) BOOL hadAppBar;        // found YTM's bar at least once
+@property (nonatomic) BOOL ownPagePresented; // we presented something that is still up
 @end
 
 #pragma mark - YTM's player while the Downloads tab is open
@@ -189,7 +191,7 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     // Leaving the tab: YTM's logo comes back right away. Our own pages (player,
     // playlist, search...) cover everything, so the bar just stays for them.
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (![self ytmu_ownScreenOnTop])
+        if (![self ytmu_ownPageUp])
             [self layoutTopBar:NO];
     });
     // Our own playlist page / Now Playing slides over: keep YTM's player hidden
@@ -228,6 +230,45 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 
 #pragma mark Top bar ("Downloads" instead of YTM's logo)
 
+// YTM's own history / search icons (SF Symbols look different), 24x24 grid
+static UIImage *YTMUTopBarIcon(NSString *name) {
+    CGFloat side = 27;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side)];
+    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextScaleCTM(context.CGContext, side / 24.0, side / 24.0);
+        [[UIColor whiteColor] setStroke];
+        [[UIColor whiteColor] setFill];
+        UIBezierPath *path = [UIBezierPath bezierPath];
+        path.lineWidth = 2.1;
+        path.lineCapStyle = kCGLineCapRound;
+        path.lineJoinStyle = kCGLineJoinRound;
+        if ([name isEqualToString:@"history"]) {
+            // Clock circle open on the left, arrowhead at its start, two hands
+            CGFloat radius = 8.6;
+            CGFloat start = (CGFloat)(M_PI * 190.0 / 180.0), end = (CGFloat)(M_PI * 152.0 / 180.0);
+            [path addArcWithCenter:CGPointMake(12.4, 12) radius:radius startAngle:start endAngle:end clockwise:YES];
+            [path moveToPoint:CGPointMake(12.4, 7.6)];
+            [path addLineToPoint:CGPointMake(12.4, 12.3)];
+            [path addLineToPoint:CGPointMake(15.6, 14.8)];
+            [path stroke];
+            CGPoint tip = CGPointMake(12.4 + radius * cos(start), 12 + radius * sin(start));
+            UIBezierPath *arrow = [UIBezierPath bezierPath];
+            [arrow moveToPoint:CGPointMake(tip.x - 3.0, tip.y - 1.6)];
+            [arrow addLineToPoint:CGPointMake(tip.x + 2.6, tip.y - 1.6)];
+            [arrow addLineToPoint:CGPointMake(tip.x - 0.2, tip.y + 2.8)];
+            [arrow closePath];
+            [arrow fill];
+        } else {
+            // Magnifying glass
+            [path appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(3.6, 3.6, 13.2, 13.2)]];
+            [path moveToPoint:CGPointMake(15.2, 15.2)];
+            [path addLineToPoint:CGPointMake(20.4, 20.4)];
+            [path stroke];
+        }
+    }];
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+}
+
 - (UIButton *)topBarButton:(NSString *)symbol action:(SEL)action {
     return [self topBarButton:symbol action:action width:44];
 }
@@ -259,6 +300,8 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     title.translatesAutoresizingMaskIntoConstraints = NO;
     UIButton *history = [self topBarButton:@"clock.arrow.circlepath" action:@selector(openHistory)];
     UIButton *search = [self topBarButton:@"magnifyingglass" action:@selector(openSearch)];
+    [history setImage:YTMUTopBarIcon(@"history") forState:UIControlStateNormal];
+    [search setImage:YTMUTopBarIcon(@"search") forState:UIControlStateNormal];
     UIButton *more = [self topBarButton:@"ellipsis" action:@selector(showTopMenu:) width:26];
     // Vertical ⋮ drawn upright (a rotated button would keep its wide frame)
     UIImage *dots = [more imageForState:UIControlStateNormal];
@@ -326,20 +369,30 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     return nil;
 }
 
-- (void)layoutTopBar:(BOOL)onScreen {
-    UIWindow *window = self.view.window;
-    if (!onScreen || !window) {
+- (void)layoutTopBar:(BOOL)visible {
+    // Hidden only when this tab is really left (not for our own pages / menus)
+    if (!visible) {
         self.topBar.hidden = YES;
         return;
     }
+    UIWindow *window = self.view.window;
+    if (!window)
+        return; // behind one of our full-screen pages: leave the bar exactly as it is
+
     CGFloat safeTop = window.safeAreaInsets.top;
     CGFloat width = window.bounds.size.width;
-    // YTM can rebuild its bar (e.g. after full-screen pages): find it every time
+    // YTM can rebuild its bar: look for it, but never give up a bar we already sit in
+    UIView *current = self.topBar.superview;
+    BOOL currentValid = current && current != self.view && current.window && !current.hidden;
     UIView *host = [self appTopBarInWindow:window];
-    if (!host) // keep the bar we already sit in, if it's still there
-        host = (self.topBar.superview && self.topBar.superview != self.view && self.topBar.superview.window) ? self.topBar.superview : self.view;
+    if (!host)
+        host = currentValid ? current : (self.hadAppBar && current ? current : self.view);
+    if (host != self.view)
+        self.hadAppBar = YES;
     if (self.topBar.superview != host)
         [host addSubview:self.topBar];
+    // Above everything YTM puts in its bar (logo), whatever order its views get
+    self.topBar.layer.zPosition = 1000;
     [host bringSubviewToFront:self.topBar];
 
     // Same height as YTM's bar, leaving its avatar (right) visible
@@ -388,11 +441,11 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
         [self.topBarLink invalidate];
         self.topBarLink = nil;
     }
-    BOOL ownPageOnTop = !self.topBar.hidden && [self ytmu_ownScreenOnTop];
-    [self layoutTopBar:[self ytmu_isOnScreen] || ownPageOnTop];
+    [self layoutTopBar:[self ytmu_isOnScreen] || [self ytmu_ownPageUp]];
 }
 
 - (void)presentViewController:(UIViewController *)viewController animated:(BOOL)animated completion:(void (^)(void))completion {
+    self.ownPagePresented = YES;
     [self guardTopBar];
     [super presentViewController:viewController animated:animated completion:completion];
 }
@@ -663,6 +716,15 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
     return hit && [hit isDescendantOfView:self.view];
 }
 
+// One of our pages / menus / share sheets is still up (keeps our top bar)
+- (BOOL)ytmu_ownPageUp {
+    UIWindow *window = self.view.window ?: [UIApplication sharedApplication].keyWindow;
+    BOOL anythingPresented = window.rootViewController.presentedViewController != nil;
+    if (!anythingPresented)
+        self.ownPagePresented = NO;
+    return (self.ownPagePresented && anythingPresented) || [self ytmu_ownScreenOnTop];
+}
+
 // Something we opened from this tab is on top (playlist page, Now Playing, menus)
 - (BOOL)ytmu_ownScreenOnTop {
     UIWindow *window = self.view.window ?: [UIApplication sharedApplication].keyWindow;
@@ -681,13 +743,12 @@ static void YTMUCollectAppPlayers(UIViewController *vc, NSArray<UIView *> *keep,
 // Runs every 0.25 s while this tab exists: YTM's player hidden exactly while we're visible
 - (void)syncAppPlayer {
     // One of our pages opened / closed (also ones opened from search, history...)
-    BOOL anyOwnPage = [self ytmu_ownScreenOnTop];
+    BOOL anyOwnPage = [self ytmu_ownPageUp];
     if (anyOwnPage != self.lastOwnPageOnTop) {
         self.lastOwnPageOnTop = anyOwnPage;
         [self guardTopBar];
     }
-    BOOL ownPageOnTop = !self.topBar.hidden && anyOwnPage;
-    [self layoutTopBar:[self ytmu_isOnScreen] || ownPageOnTop];
+    [self layoutTopBar:[self ytmu_isOnScreen] || anyOwnPage];
     if (!self.keepAppPlayer && ([self ytmu_isOnScreen] || (self.hiddenAppPlayerViews.count && [self ytmu_ownScreenOnTop])))
         [self hideAppPlayerForced:NO];
     else
