@@ -13,77 +13,13 @@ static UIImage *FrozenMusicBundleIcon(NSString *name) {
     return [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
 }
 
-// Same size as the other link icons (24 pt)
-static UIImage *FrozenMusicIconSized(UIImage *image) {
-    if (!image)
-        return nil;
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(24, 24)];
-    UIImage *sized = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        UIBezierPath *clip = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, 24, 24) cornerRadius:5];
-        [clip addClip];
-        [image drawInRect:CGRectMake(0, 0, 24, 24)];
-    }];
-    return [sized imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-}
-
-// fr0z3n.com's own icon (what the site shows as its icon), cached after the first load
-static NSURL *FrozenMusicSiteIconCache(void) {
-    NSURL *caches = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] lastObject];
-    return [caches URLByAppendingPathComponent:@"frozenmusic-site-icon.png"];
-}
-
-static void FrozenMusicLoadSiteIcon(void (^done)(UIImage *icon)) {
-    UIImage *cached = [UIImage imageWithContentsOfFile:FrozenMusicSiteIconCache().path];
-    if (cached) {
-        done(cached);
-        return;
-    }
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-        // Icon links the page itself declares, then the usual places
-        NSData *htmlData = [NSData dataWithContentsOfURL:[NSURL URLWithString:FrozenMusicWebsite]];
-        NSString *html = htmlData ? [[NSString alloc] initWithData:htmlData encoding:NSUTF8StringEncoding] : nil;
-        if (html) {
-            NSRegularExpression *links = [NSRegularExpression regularExpressionWithPattern:@"<link[^>]+rel=[\"'][^\"']*icon[^\"']*[\"'][^>]*>" options:NSRegularExpressionCaseInsensitive error:nil];
-            NSRegularExpression *href = [NSRegularExpression regularExpressionWithPattern:@"href=[\"']([^\"']+)[\"']" options:NSRegularExpressionCaseInsensitive error:nil];
-            for (NSTextCheckingResult *link in [links matchesInString:html options:0 range:NSMakeRange(0, html.length)]) {
-                NSString *tag = [html substringWithRange:link.range];
-                NSTextCheckingResult *match = [href firstMatchInString:tag options:0 range:NSMakeRange(0, tag.length)];
-                if (match) {
-                    NSURL *url = [NSURL URLWithString:[tag substringWithRange:[match rangeAtIndex:1]] relativeToURL:[NSURL URLWithString:FrozenMusicWebsite]];
-                    if (url.absoluteString.length)
-                        [candidates insertObject:url.absoluteString atIndex:0]; // later tags are usually the big ones
-                }
-            }
-        }
-        [candidates addObjectsFromArray:@[[FrozenMusicWebsite stringByAppendingString:@"/apple-touch-icon.png"],
-                                          [FrozenMusicWebsite stringByAppendingString:@"/favicon.png"],
-                                          [FrozenMusicWebsite stringByAppendingString:@"/favicon.ico"]]];
-        UIImage *icon = nil;
-        for (NSString *candidate in candidates) {
-            NSData *data = [NSData dataWithContentsOfURL:[NSURL URLWithString:candidate]];
-            icon = data ? [UIImage imageWithData:data] : nil;
-            if (icon) {
-                [UIImagePNGRepresentation(icon) writeToURL:FrozenMusicSiteIconCache() atomically:YES];
-                break;
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            done(icon);
-        });
-    });
-}
-
-@interface FrozenMusicSettingsController ()
-@property (nonatomic, strong) UIImage *siteIcon;
-@end
-
 @implementation FrozenMusicSettingsController
 
 - (NSArray<NSDictionary *> *)toggles {
     return @[
         @{@"title": @"Original YTM album look", @"desc": @"Albums show track numbers instead of cover art, like YouTube Music's album pages", @"key": @"frozenAlbumLook"},
-        @{@"title": @"Player hue with OLED", @"desc": @"Keep the cover-colored hue in the full player when OLED Dark Theme is on", @"key": @"frozenOledPlayerHue"}
+        @{@"title": @"Player hue with OLED", @"desc": @"Keep the cover-colored hue in the full player when OLED Dark Theme is on", @"key": @"frozenOledPlayerHue"},
+        @{@"title": @"YTM volume boost look", @"desc": @"Volume Boost panel in YouTube Music's style: grey, or black with OLED Dark Theme, with a white slider", @"key": @"frozenVolumeLook"}
     ];
 }
 
@@ -114,12 +50,6 @@ static void FrozenMusicLoadSiteIcon(void (^done)(UIImage *icon)) {
         [header addSubview:logoView];
         self.tableView.tableHeaderView = header;
     }
-
-    __weak __typeof(self) weakSelf = self;
-    FrozenMusicLoadSiteIcon(^(UIImage *icon) {
-        weakSelf.siteIcon = icon;
-        [weakSelf.tableView reloadSections:[NSIndexSet indexSetWithIndex:1] withRowAnimation:UITableViewRowAnimationNone];
-    });
 }
 
 #pragma mark Table
@@ -172,8 +102,7 @@ static void FrozenMusicLoadSiteIcon(void (^done)(UIImage *icon)) {
     if (indexPath.row == 0) {
         cell.textLabel.text = @"fr0z3n.com";
         cell.detailTextLabel.text = @"Website";
-        cell.imageView.image = FrozenMusicIconSized(self.siteIcon) ?: [UIImage systemImageNamed:@"globe"];
-        cell.imageView.tintColor = FrozenMusicBlue();
+        cell.imageView.image = FrozenMusicBundleIcon(@"fr0z3n-24@2x");
     } else {
         cell.textLabel.text = @"GitHub";
         cell.detailTextLabel.text = @"FrozenMusic source code";

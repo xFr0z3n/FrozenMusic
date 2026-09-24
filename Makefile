@@ -14,9 +14,11 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = YTMusicUltimate
 $(TWEAK_NAME)_FILES = $(filter-out Source/Sideloading.x, $(shell find Source \( -name '*.x' -o -name '*.xm' -o -name '*.m' \)))
 $(TWEAK_NAME)_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -DTWEAK_VERSION=$(PACKAGE_VERSION)
-$(TWEAK_NAME)_FRAMEWORKS = UIKit Foundation AVFoundation AudioToolbox VideoToolbox
+$(TWEAK_NAME)_FRAMEWORKS = UIKit Foundation AVFoundation AudioToolbox VideoToolbox CoreMotion QuartzCore
 $(TWEAK_NAME)_OBJ_FILES = $(shell find Source/Utils/lib -name '*.a')
 $(TWEAK_NAME)_LIBRARIES = bz2 c++ iconv z
+# VolumeBoostYT: its YouTube settings menu uses iOS 14 APIs (only reached in YouTube)
+Source/VolumeBoost/VolumeBoost.x_CFLAGS = -Wno-unguarded-availability-new -Wno-unguarded-availability
 ifeq ($(SIDELOADING),1)
 $(TWEAK_NAME)_FILES += Source/Sideloading.x
 endif
