@@ -5,6 +5,7 @@
 #import "FFMpegDownloader.h"
 #import "PlaylistDownloader.h"
 #import "Offline/YTMUOfflinePlayer.h"
+#import "Offline/YTMULyrics.h"
 #import "Headers/YTUIResources.h"
 #import "Headers/YTMActionSheetController.h"
 #import "Headers/YTMActionRowView.h"
@@ -810,6 +811,9 @@ void YTMUPauseAppPlayer(void) {
 
     NSString *mediaName = YTMUCleanFileName([NSString stringWithFormat:@"%@ - %@", artist, title]);
     NSString *tempName = videoID.length > 0 ? videoID : [NSUUID UUID].UUIDString;
+
+    // Lyrics are saved with the song, for the offline player
+    YTMUPrefetchLyrics(videoID, title, artist, duration);
 
     // Network work off the main thread (the old code froze the UI here)
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{

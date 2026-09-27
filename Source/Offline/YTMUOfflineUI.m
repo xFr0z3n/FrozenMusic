@@ -1,5 +1,7 @@
 #import "YTMUOfflineUI.h"
 #import "YTMUActionSheet.h"
+#import "YTMULyrics.h"
+#import "YTMULyricsViewController.h"
 #import <QuartzCore/QuartzCore.h>
 #include <float.h>
 
@@ -247,6 +249,135 @@ static UIButton *YTMUIconButton(NSString *symbol, CGFloat pointSize, UIColor *ti
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:pointSize weight:UIImageSymbolWeightSemibold];
     [button setImage:[UIImage systemImageNamed:symbol withConfiguration:config] forState:UIControlStateNormal];
+    button.tintColor = tint;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    return button;
+}
+
+// Closed polygon with rounded corners (YTM's soft triangles)
+static UIBezierPath *YTMURoundedPolygon(NSArray<NSValue *> *points, CGFloat radius) {
+    CGMutablePathRef path = CGPathCreateMutable();
+    NSUInteger count = points.count;
+    CGPoint last = points[count - 1].CGPointValue, first = points[0].CGPointValue;
+    CGPathMoveToPoint(path, NULL, (last.x + first.x) / 2.0, (last.y + first.y) / 2.0);
+    for (NSUInteger i = 0; i < count; i++) {
+        CGPoint corner = points[i].CGPointValue;
+        CGPoint next = points[(i + 1) % count].CGPointValue;
+        CGPathAddArcToPoint(path, NULL, corner.x, corner.y, next.x, next.y, radius);
+    }
+    CGPathCloseSubpath(path);
+    UIBezierPath *bezier = [UIBezierPath bezierPathWithCGPath:path];
+    CGPathRelease(path);
+    return bezier;
+}
+
+// YTM's player icons, drawn (SF Symbols look different): template images, tinted by the button
+static UIImage *YTMUPlayerIcon(NSString *name) {
+    static NSMutableDictionary<NSString *, UIImage *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSMutableDictionary dictionary];
+    });
+    UIImage *cached = cache[name];
+    if (cached)
+        return cached;
+
+    CGSize size = CGSizeMake(22, 20);
+    if ([name isEqualToString:@"previous"] || [name isEqualToString:@"next"])
+        size = CGSizeMake(26, 24);
+    else if ([name isEqualToString:@"play"] || [name isEqualToString:@"pause"])
+        size = CGSizeMake(24, 24);
+    else if ([name isEqualToString:@"lyrics"])
+        size = CGSizeMake(23, 15);
+
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size];
+    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        [[UIColor blackColor] setFill];
+        [[UIColor blackColor] setStroke];
+        UIBezierPath *path = [UIBezierPath bezierPath];
+        path.lineCapStyle = kCGLineCapRound;
+        path.lineJoinStyle = kCGLineJoinRound;
+
+        if ([name isEqualToString:@"shuffle"]) {
+            // Two crossing lines with open arrow heads on the right
+            path.lineWidth = 1.7;
+            [path moveToPoint:CGPointMake(1.5, 4)];
+            [path addLineToPoint:CGPointMake(5, 4)];
+            [path addCurveToPoint:CGPointMake(15, 16) controlPoint1:CGPointMake(10, 4) controlPoint2:CGPointMake(10, 16)];
+            [path addLineToPoint:CGPointMake(20, 16)];
+            [path moveToPoint:CGPointMake(1.5, 16)];
+            [path addLineToPoint:CGPointMake(5, 16)];
+            [path addCurveToPoint:CGPointMake(15, 4) controlPoint1:CGPointMake(10, 16) controlPoint2:CGPointMake(10, 4)];
+            [path addLineToPoint:CGPointMake(20, 4)];
+            [path moveToPoint:CGPointMake(17, 1)];
+            [path addLineToPoint:CGPointMake(20, 4)];
+            [path addLineToPoint:CGPointMake(17, 7)];
+            [path moveToPoint:CGPointMake(17, 13)];
+            [path addLineToPoint:CGPointMake(20, 16)];
+            [path addLineToPoint:CGPointMake(17, 19)];
+            [path stroke];
+        } else if ([name isEqualToString:@"repeat"] || [name isEqualToString:@"repeatOne"]) {
+            // Loop: top line → right, bottom line ← left, open arrow heads
+            path.lineWidth = 1.7;
+            [path moveToPoint:CGPointMake(2, 10.5)];
+            [path addLineToPoint:CGPointMake(2, 8)];
+            [path addQuadCurveToPoint:CGPointMake(5, 5) controlPoint:CGPointMake(2, 5)];
+            [path addLineToPoint:CGPointMake(19.5, 5)];
+            [path moveToPoint:CGPointMake(16.5, 2)];
+            [path addLineToPoint:CGPointMake(19.5, 5)];
+            [path addLineToPoint:CGPointMake(16.5, 8)];
+            [path moveToPoint:CGPointMake(20, 9.5)];
+            [path addLineToPoint:CGPointMake(20, 12)];
+            [path addQuadCurveToPoint:CGPointMake(17, 15) controlPoint:CGPointMake(20, 15)];
+            [path addLineToPoint:CGPointMake(2.5, 15)];
+            [path moveToPoint:CGPointMake(5.5, 12)];
+            [path addLineToPoint:CGPointMake(2.5, 15)];
+            [path addLineToPoint:CGPointMake(5.5, 18)];
+            [path stroke];
+            if ([name isEqualToString:@"repeatOne"]) {
+                NSDictionary *attributes = @{NSFontAttributeName: [UIFont systemFontOfSize:7.5 weight:UIFontWeightBold],
+                                             NSForegroundColorAttributeName: [UIColor blackColor]};
+                CGSize textSize = [@"1" sizeWithAttributes:attributes];
+                [@"1" drawAtPoint:CGPointMake(11 - textSize.width / 2.0, 10 - textSize.height / 2.0) withAttributes:attributes];
+            }
+        } else if ([name isEqualToString:@"previous"] || [name isEqualToString:@"next"]) {
+            // Thin bar + soft triangle
+            BOOL previous = [name isEqualToString:@"previous"];
+            CGFloat barX = previous ? 0.5 : size.width - 3;
+            [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(barX, 0.5, 2.5, 23) cornerRadius:1.25] fill];
+            NSArray *points = previous
+                ? @[[NSValue valueWithCGPoint:CGPointMake(5.5, 12)], [NSValue valueWithCGPoint:CGPointMake(25.5, 0.5)], [NSValue valueWithCGPoint:CGPointMake(25.5, 23.5)]]
+                : @[[NSValue valueWithCGPoint:CGPointMake(20.5, 12)], [NSValue valueWithCGPoint:CGPointMake(0.5, 23.5)], [NSValue valueWithCGPoint:CGPointMake(0.5, 0.5)]];
+            [YTMURoundedPolygon(points, 2.5) fill];
+        } else if ([name isEqualToString:@"play"]) {
+            [YTMURoundedPolygon(@[[NSValue valueWithCGPoint:CGPointMake(5, 1)], [NSValue valueWithCGPoint:CGPointMake(23, 12)], [NSValue valueWithCGPoint:CGPointMake(5, 23)]], 2.5) fill];
+        } else if ([name isEqualToString:@"pause"]) {
+            [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(4, 1, 6.5, 22) cornerRadius:2] fill];
+            [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(13.5, 1, 6.5, 22) cornerRadius:2] fill];
+        } else if ([name isEqualToString:@"lyrics"]) {
+            // YTM's lyrics quotes (two outlined "9"s), a bit thinner than YTM's
+            path.lineWidth = 1.5;
+            for (CGFloat x = 0.75; x < 20; x += 11.75) {
+                [path moveToPoint:CGPointMake(x, 0.75)];
+                [path addLineToPoint:CGPointMake(x + 9.5, 0.75)];
+                [path addLineToPoint:CGPointMake(x + 9.5, 7.2)];
+                [path addLineToPoint:CGPointMake(x + 6.6, 14.25)];
+                [path addLineToPoint:CGPointMake(x + 3.4, 14.25)];
+                [path addLineToPoint:CGPointMake(x + 5.8, 8.2)];
+                [path addLineToPoint:CGPointMake(x, 8.2)];
+                [path closePath];
+            }
+            [path stroke];
+        }
+    }];
+    image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    cache[name] = image;
+    return image;
+}
+
+static UIButton *YTMUDrawnButton(NSString *icon, UIColor *tint) {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    [button setImage:YTMUPlayerIcon(icon) forState:UIControlStateNormal];
     button.tintColor = tint;
     button.translatesAutoresizingMaskIntoConstraints = NO;
     return button;
@@ -1301,6 +1432,8 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 @property (nonatomic, strong) UIButton *playButton;
 @property (nonatomic, strong) UIButton *nextButton;
 @property (nonatomic, strong) UIButton *repeatButton;
+@property (nonatomic, strong) UIButton *lyricsButton;
+@property (nonatomic, strong) UIActivityIndicatorView *lyricsSpinner;
 @property (nonatomic) BOOL scrubbing;
 // Queue ("Up next"): bottom bar opens it, artwork makes room
 @property (nonatomic, strong) UIView *upNextBar;
@@ -1345,11 +1478,27 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     menuButton.transform = CGAffineTransformMakeRotation((CGFloat)M_PI_2);
     [menuButton addTarget:self action:@selector(showMenu:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:menuButton];
+
+    // Lyrics, left of ⋮ (where YTM has its cast button)
+    self.lyricsButton = YTMUDrawnButton(@"lyrics", [UIColor whiteColor]);
+    [self.lyricsButton addTarget:self action:@selector(showLyrics) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.lyricsButton];
+    self.lyricsSpinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    self.lyricsSpinner.color = [UIColor whiteColor];
+    self.lyricsSpinner.hidesWhenStopped = YES;
+    self.lyricsSpinner.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.lyricsSpinner];
     [NSLayoutConstraint activateConstraints:@[
         [menuButton.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
         [menuButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
         [menuButton.widthAnchor constraintEqualToConstant:44],
-        [menuButton.heightAnchor constraintEqualToConstant:44]
+        [menuButton.heightAnchor constraintEqualToConstant:44],
+        [self.lyricsButton.trailingAnchor constraintEqualToAnchor:menuButton.leadingAnchor constant:-4],
+        [self.lyricsButton.centerYAnchor constraintEqualToAnchor:menuButton.centerYAnchor],
+        [self.lyricsButton.widthAnchor constraintEqualToConstant:44],
+        [self.lyricsButton.heightAnchor constraintEqualToConstant:44],
+        [self.lyricsSpinner.centerXAnchor constraintEqualToAnchor:self.lyricsButton.centerXAnchor],
+        [self.lyricsSpinner.centerYAnchor constraintEqualToAnchor:self.lyricsButton.centerYAnchor]
     ]];
 
     self.artworkView = [UIImageView new];
@@ -1375,22 +1524,37 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     self.elapsedLabel = YTMULabel([UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular], YTMUSecondaryText());
     self.remainingLabel = YTMULabel([UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular], YTMUSecondaryText());
 
-    self.shuffleButton = YTMUIconButton(@"shuffle", 22, [UIColor whiteColor]);
-    self.previousButton = YTMUIconButton(@"backward.end.fill", 30, [UIColor whiteColor]);
-    self.playButton = YTMUCircleButton(@"play.fill", 76, 32, [UIColor whiteColor], [UIColor blackColor]);
-    self.nextButton = YTMUIconButton(@"forward.end.fill", 30, [UIColor whiteColor]);
-    self.repeatButton = YTMUIconButton(@"repeat", 22, [UIColor whiteColor]);
+    // YTM's buttons: thin shuffle / repeat, bar + soft triangle, 72 pt play circle
+    self.shuffleButton = YTMUDrawnButton(@"shuffle", [UIColor whiteColor]);
+    self.previousButton = YTMUDrawnButton(@"previous", [UIColor whiteColor]);
+    self.playButton = YTMUDrawnButton(@"play", [UIColor blackColor]);
+    self.playButton.backgroundColor = [UIColor whiteColor];
+    self.playButton.layer.cornerRadius = 36;
+    self.nextButton = YTMUDrawnButton(@"next", [UIColor whiteColor]);
+    self.repeatButton = YTMUDrawnButton(@"repeat", [UIColor whiteColor]);
     [self.shuffleButton addTarget:self action:@selector(shuffleTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.previousButton addTarget:self action:@selector(previousTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.playButton addTarget:self action:@selector(playTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.nextButton addTarget:self action:@selector(nextTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.repeatButton addTarget:self action:@selector(repeatTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView *controls = [[UIStackView alloc] initWithArrangedSubviews:@[self.shuffleButton, self.previousButton, self.playButton, self.nextButton, self.repeatButton]];
-    controls.axis = UILayoutConstraintAxisHorizontal;
-    controls.distribution = UIStackViewDistributionEqualCentering;
-    controls.alignment = UIStackViewAlignmentCenter;
+    // Same spots as YTM, as a share of the screen width
+    UIView *controls = [UIView new];
     controls.translatesAutoresizingMaskIntoConstraints = NO;
+    NSArray<UIButton *> *controlButtons = @[self.shuffleButton, self.previousButton, self.playButton, self.nextButton, self.repeatButton];
+    NSArray<NSNumber *> *controlSpots = @[@0.193, @0.534, @1.0, @1.466, @1.807];
+    for (NSUInteger i = 0; i < controlButtons.count; i++) {
+        UIButton *button = controlButtons[i];
+        CGFloat side = button == self.playButton ? 72 : 56;
+        [controls addSubview:button];
+        [NSLayoutConstraint activateConstraints:@[
+            [NSLayoutConstraint constraintWithItem:button attribute:NSLayoutAttributeCenterX relatedBy:NSLayoutRelationEqual
+                                            toItem:controls attribute:NSLayoutAttributeCenterX multiplier:controlSpots[i].doubleValue constant:0],
+            [button.centerYAnchor constraintEqualToAnchor:controls.centerYAnchor],
+            [button.widthAnchor constraintEqualToConstant:side],
+            [button.heightAnchor constraintEqualToConstant:side]
+        ]];
+    }
 
     // Bottom: grabber + song title (cut with …), tap / swipe up = queue
     self.upNextBar = [UIView new];
@@ -1414,6 +1578,8 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     for (UIView *view in @[closeButton, self.artworkView, self.titleLabel, self.artistLabel, self.slider, self.elapsedLabel, self.remainingLabel, controls, self.upNextBar, self.queueView])
         [self.view addSubview:view];
     [self.view bringSubviewToFront:menuButton];
+    [self.view bringSubviewToFront:self.lyricsButton];
+    [self.view bringSubviewToFront:self.lyricsSpinner];
 
     self.artworkAspect = [self.artworkView.heightAnchor constraintEqualToAnchor:self.artworkView.widthAnchor];
     self.artworkCollapsed = [self.artworkView.heightAnchor constraintEqualToConstant:0];
@@ -1449,8 +1615,9 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
         [self.remainingLabel.trailingAnchor constraintEqualToAnchor:self.slider.trailingAnchor],
 
         [controls.topAnchor constraintEqualToAnchor:self.elapsedLabel.bottomAnchor constant:22],
-        [controls.leadingAnchor constraintEqualToAnchor:self.artworkView.leadingAnchor],
-        [controls.trailingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor],
+        [controls.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [controls.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [controls.heightAnchor constraintEqualToConstant:72],
         [controls.bottomAnchor constraintLessThanOrEqualToAnchor:self.upNextBar.topAnchor constant:-12],
 
         [self.upNextBar.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:40],
@@ -1549,12 +1716,10 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     }
     self.backdrop.hidden = !showHue;
 
-    UIImageSymbolConfiguration *playConfig = [UIImageSymbolConfiguration configurationWithPointSize:32 weight:UIImageSymbolWeightSemibold];
-    [self.playButton setImage:[UIImage systemImageNamed:player.isPlaying ? @"pause.fill" : @"play.fill" withConfiguration:playConfig] forState:UIControlStateNormal];
+    [self.playButton setImage:YTMUPlayerIcon(player.isPlaying ? @"pause" : @"play") forState:UIControlStateNormal];
 
     self.shuffleButton.tintColor = player.isShuffled ? [UIColor whiteColor] : [UIColor colorWithWhite:1.0 alpha:0.45];
-    UIImageSymbolConfiguration *smallConfig = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
-    [self.repeatButton setImage:[UIImage systemImageNamed:player.repeatMode == YTMURepeatOne ? @"repeat.1" : @"repeat" withConfiguration:smallConfig] forState:UIControlStateNormal];
+    [self.repeatButton setImage:YTMUPlayerIcon(player.repeatMode == YTMURepeatOne ? @"repeatOne" : @"repeat") forState:UIControlStateNormal];
     self.repeatButton.tintColor = player.repeatMode == YTMURepeatOff ? [UIColor colorWithWhite:1.0 alpha:0.45] : [UIColor whiteColor];
 
     [self refreshProgress];
@@ -1771,12 +1936,61 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 }
 
 - (void)close {
+    // Lyrics (or a sheet) on top: close that first, then the player
+    if (self.presentedViewController) {
+        if (!self.presentedViewController.isBeingDismissed) {
+            [self dismissViewControllerAnimated:NO completion:^{
+                if (![YTMUOfflinePlayer shared].currentTrack)
+                    [self close];
+            }];
+        } else {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (![YTMUOfflinePlayer shared].currentTrack)
+                    [self close];
+            });
+        }
+        return;
+    }
     if (self.showingQueue) {
         [self hideQueue];
         return;
     }
     if (self.presentingViewController && !self.isBeingDismissed)
         [self dismissViewControllerAnimated:YTMUAnimations() completion:nil];
+}
+
+#pragma mark Lyrics
+
+- (void)showLyrics {
+    YTMUOfflineTrack *track = [YTMUOfflinePlayer shared].currentTrack;
+    if (!track || self.lyricsSpinner.isAnimating || self.presentedViewController)
+        return;
+    YTMULyrics *saved = [YTMULyrics savedLyricsForTrack:track];
+    if (saved) {
+        [self presentLyrics:saved track:track];
+        return;
+    }
+    // Not saved yet (older download): ask YTM once, spinner in the button meanwhile
+    self.lyricsButton.hidden = YES;
+    [self.lyricsSpinner startAnimating];
+    [YTMULyrics loadForTrack:track completion:^(YTMULyrics *lyrics, BOOL offline) {
+        [self.lyricsSpinner stopAnimating];
+        self.lyricsButton.hidden = NO;
+        if (![[YTMUOfflinePlayer shared].currentTrack.url isEqual:track.url] || !self.view.window)
+            return;
+        if (!lyrics) {
+            YTMUShowInfoBox(self, offline ? @"No lyrics available offline" : @"No lyrics available");
+            return;
+        }
+        [self presentLyrics:lyrics track:track];
+    }];
+}
+
+- (void)presentLyrics:(YTMULyrics *)lyrics track:(YTMUOfflineTrack *)track {
+    if (self.presentedViewController)
+        return;
+    YTMULyricsViewController *controller = [[YTMULyricsViewController alloc] initWithTrack:track lyrics:lyrics];
+    [self presentViewController:controller animated:YTMUAnimations() completion:nil];
 }
 
 @end
