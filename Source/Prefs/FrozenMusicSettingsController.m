@@ -1,5 +1,6 @@
 #import "FrozenMusicSettingsController.h"
 #import "FrozenDiscordSettingsController.h"
+#import "FrozenTranslationSettingsController.h"
 
 // Discord RPC page on top, then the switches, then the links
 typedef NS_ENUM(NSInteger, FrozenMusicSection) {
@@ -70,7 +71,7 @@ static UIImage *FrozenMusicBundleIcon(NSString *name) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
-        case FrozenMusicSectionDiscord: return 1;
+        case FrozenMusicSectionDiscord: return 2; // Discord RPC, Offline translation
         case FrozenMusicSectionToggles: return (NSInteger)[self toggles].count;
         default: return 2;
     }
@@ -94,6 +95,15 @@ static UIImage *FrozenMusicBundleIcon(NSString *name) {
     cell.detailTextLabel.numberOfLines = 0;
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
     cell.textLabel.adjustsFontSizeToFitWidth = YES;
+
+    if (indexPath.section == FrozenMusicSectionDiscord && indexPath.row == 1) {
+        cell.textLabel.text = @"Offline translation";
+        cell.detailTextLabel.text = @"Languages for translating lyrics without internet";
+        cell.imageView.image = [UIImage systemImageNamed:@"character.book.closed.fill"] ?: [UIImage systemImageNamed:@"globe"];
+        cell.imageView.tintColor = FrozenMusicBlue();
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        return cell;
+    }
 
     if (indexPath.section == FrozenMusicSectionDiscord) {
         cell.textLabel.text = @"Discord RPC";
@@ -141,7 +151,8 @@ static UIImage *FrozenMusicBundleIcon(NSString *name) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == FrozenMusicSectionDiscord) {
-        [self.navigationController pushViewController:[FrozenDiscordSettingsController new] animated:YES];
+        UIViewController *page = indexPath.row == 1 ? [FrozenTranslationSettingsController new] : [FrozenDiscordSettingsController new];
+        [self.navigationController pushViewController:page animated:YES];
         return;
     }
     if (indexPath.section != FrozenMusicSectionLinks)

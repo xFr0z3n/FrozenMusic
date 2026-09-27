@@ -27,8 +27,8 @@
 - (NSString *)languageCode;
 + (NSString *)deviceLanguageCode;
 // One translated string per line (empty for ♪ / blank lines). Google when there's internet,
-// without internet Google's on-device ML Kit model (its language is downloaded while online,
-// e.g. when the song is downloaded). Never hangs: answers within ~20 s. Main queue.
+// without internet Google's on-device ML Kit models (languages downloaded in FrozenMusic >
+// Offline translation). Never hangs: answers within ~20 s. Main queue.
 - (void)translationForTrack:(YTMUOfflineTrack *)track presenter:(UIViewController *)presenter
                  completion:(void (^)(NSArray<NSString *> *translation, NSString *credit, NSString *error))completion;
 + (BOOL)canTranslateOnDevice;
@@ -36,8 +36,9 @@
 
 // "Lyrics/<song>.lrc" of a downloaded song
 FOUNDATION_EXPORT NSURL *YTMULyricsFileForAudio(NSURL *audioURL);
-// Downloads (background thread, blocks): writes the song's lyrics file. NO when it has none
-FOUNDATION_EXPORT BOOL YTMUSaveLyricsForDownload(NSURL *audioURL, NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration);
+// Downloads (background thread, blocks): writes the song's lyrics file. refresh: ask again even
+// when there is one (replaced with the newest, removed when the song has none). NO = no lyrics
+FOUNDATION_EXPORT BOOL YTMUSaveLyricsForDownload(NSURL *audioURL, NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration, BOOL refresh);
 // Same in the background, once per launch (songs downloaded before lyrics existed)
 FOUNDATION_EXPORT void YTMUPrefetchLyricsForSong(NSURL *audioURL, NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration);
 // Lyrics follow their song when it's renamed / deleted
@@ -45,3 +46,5 @@ FOUNDATION_EXPORT void YTMUMoveLyrics(NSURL *fromAudioURL, NSURL *toAudioURL);
 FOUNDATION_EXPORT void YTMUDeleteLyrics(NSURL *audioURL);
 // Removes lyrics of songs no longer in the folder
 FOUNDATION_EXPORT void YTMUCleanLyricsFolder(NSURL *folder);
+// The offline translator (FMMLTranslator in FrozenMLTranslate.framework), nil when not in this build
+FOUNDATION_EXPORT Class YTMUOfflineTranslatorClass(void);
