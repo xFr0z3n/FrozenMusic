@@ -1580,13 +1580,17 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     }
     metadata[@"track"] = [NSString stringWithFormat:@"%ld", (long)track.position];
     metadata[@"comment"] = [NSString stringWithFormat:@"https://music.youtube.com/watch?v=%@", track.videoID];
+    // Lyrics: saved for the offline player right away and written into the file
+    NSString *lyrics = YTMULyricsForDownload(track.videoID, track.title, artist, 0);
+    if (lyrics.length)
+        metadata[@"lyrics"] = lyrics;
 
     // Download (no re-encoding)
     NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.m4a", track.videoID]];
     [fm removeItemAtPath:tempPath error:nil];
 
     NSMutableArray<NSString *> *arguments = [@[@"-y", @"-i", audioURL, @"-map", @"0:a:0", @"-c", @"copy"] mutableCopy];
-    for (NSString *key in @[@"title", @"artist", @"album", @"album_artist", @"track", @"date", @"comment"]) {
+    for (NSString *key in @[@"title", @"artist", @"album", @"album_artist", @"track", @"date", @"comment", @"lyrics"]) {
         NSString *value = metadata[key];
         if (value.length) {
             [arguments addObject:@"-metadata"];

@@ -123,6 +123,8 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.1];
     blur.userInteractionEnabled = NO;
     blur.tag = YTMULyricsPillBlurTag;
+    // Always behind the icon + title: UIButton adds its image view later, below other subviews
+    blur.layer.zPosition = -1;
     blur.frame = button.bounds;
     blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [button insertSubview:blur atIndex:0];
@@ -145,8 +147,10 @@ static void YTMUStyleLyricsPill(UIButton *button, BOOL active) {
     UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:19 weight:UIImageSymbolWeightRegular];
     UIImage *icon = [UIImage systemImageNamed:button.accessibilityIdentifier withConfiguration:config];
     [button setImage:[icon imageWithTintColor:content renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
-    UIView *blur = [button viewWithTag:YTMULyricsPillBlurTag];
-    [button sendSubviewToBack:blur];
+    [button setImage:[icon imageWithTintColor:content renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateHighlighted];
+    [button layoutIfNeeded];
+    button.imageView.layer.zPosition = 1;
+    button.titleLabel.layer.zPosition = 1;
 }
 
 #pragma mark - Screen
@@ -229,7 +233,7 @@ static void YTMUStyleLyricsPill(UIButton *button, BOOL active) {
     self.playButton.tintColor = [UIColor whiteColor];
     self.playButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.playButton addTarget:self action:@selector(playTapped) forControlEvents:UIControlEventTouchUpInside];
-    // Skip, right of play / pause
+    // Skip, left of play / pause
     self.nextButton = [UIButton buttonWithType:UIButtonTypeSystem];
     UIImageSymbolConfiguration *nextConfig = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightSemibold];
     [self.nextButton setImage:[UIImage systemImageNamed:@"forward.end.fill" withConfiguration:nextConfig] forState:UIControlStateNormal];
@@ -340,19 +344,19 @@ static void YTMUStyleLyricsPill(UIButton *button, BOOL active) {
         [self.artworkView.centerYAnchor constraintEqualToAnchor:miniRow.centerYAnchor],
         [self.artworkView.widthAnchor constraintEqualToConstant:48],
         [self.artworkView.heightAnchor constraintEqualToConstant:48],
-        [self.nextButton.trailingAnchor constraintEqualToAnchor:miniRow.trailingAnchor constant:-10],
-        [self.nextButton.centerYAnchor constraintEqualToAnchor:miniRow.centerYAnchor],
-        [self.nextButton.widthAnchor constraintEqualToConstant:44],
-        [self.nextButton.heightAnchor constraintEqualToConstant:44],
-        [self.playButton.trailingAnchor constraintEqualToAnchor:self.nextButton.leadingAnchor constant:-4],
+        [self.playButton.trailingAnchor constraintEqualToAnchor:miniRow.trailingAnchor constant:-10],
         [self.playButton.centerYAnchor constraintEqualToAnchor:miniRow.centerYAnchor],
         [self.playButton.widthAnchor constraintEqualToConstant:44],
         [self.playButton.heightAnchor constraintEqualToConstant:44],
+        [self.nextButton.trailingAnchor constraintEqualToAnchor:self.playButton.leadingAnchor constant:-4],
+        [self.nextButton.centerYAnchor constraintEqualToAnchor:miniRow.centerYAnchor],
+        [self.nextButton.widthAnchor constraintEqualToConstant:44],
+        [self.nextButton.heightAnchor constraintEqualToConstant:44],
         [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.artworkView.trailingAnchor constant:16],
-        [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.playButton.leadingAnchor constant:-12],
+        [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.nextButton.leadingAnchor constant:-12],
         [self.titleLabel.bottomAnchor constraintEqualToAnchor:miniRow.centerYAnchor constant:-1],
         [self.artistLabel.leadingAnchor constraintEqualToAnchor:self.titleLabel.leadingAnchor],
-        [self.artistLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.playButton.leadingAnchor constant:-12],
+        [self.artistLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.nextButton.leadingAnchor constant:-12],
         [self.artistLabel.topAnchor constraintEqualToAnchor:miniRow.centerYAnchor constant:2],
 
         [grabber.topAnchor constraintEqualToAnchor:miniRow.bottomAnchor constant:10],

@@ -812,13 +812,14 @@ void YTMUPauseAppPlayer(void) {
     NSString *mediaName = YTMUCleanFileName([NSString stringWithFormat:@"%@ - %@", artist, title]);
     NSString *tempName = videoID.length > 0 ? videoID : [NSUUID UUID].UUIDString;
 
-    // Lyrics are saved with the song, for the offline player
-    YTMUPrefetchLyrics(videoID, title, artist, duration);
-
     // Network work off the main thread (the old code froze the UI here)
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *audioURL = manifestURL ? [self ytmu_audioURLFromManifest:[NSURL URLWithString:manifestURL]] : nil;
         NSData *coverData = thumbnailURL ? [NSData dataWithContentsOfURL:[NSURL URLWithString:thumbnailURL]] : nil;
+        // Lyrics: saved for the offline player right away and written into the file
+        NSString *lyrics = audioURL.length ? YTMULyricsForDownload(videoID, title, artist, duration) : nil;
+        if (lyrics.length)
+            metadata[@"lyrics"] = lyrics;
 
         dispatch_async(dispatch_get_main_queue(), ^{
             if (audioURL.length == 0) {

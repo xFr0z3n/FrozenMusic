@@ -24,8 +24,9 @@
 - (NSString *)languageCode;
 + (NSString *)deviceLanguageCode;
 // One translated string per line (empty for ♪ / blank lines), saved after the first time.
-// iOS 18+: Apple's on-device translation (offline once iOS has the languages; it asks
-// to download them, shown on `presenter`). Older iOS: Google, online. Main queue.
+// Offline with Google's on-device ML Kit models (iOS 15.5+, each language's model is
+// downloaded once; lyrics saved by downloads are translated right away). Builds without
+// the ML Kit framework use Google online. Main queue.
 - (void)translationForTrack:(YTMUOfflineTrack *)track presenter:(UIViewController *)presenter
                  completion:(void (^)(NSArray<NSString *> *translation, NSString *credit, NSString *error))completion;
 + (BOOL)canTranslateOnDevice;
@@ -33,3 +34,6 @@
 
 // Downloads call this: fetch + save the lyrics in the background (skipped when already saved)
 FOUNDATION_EXPORT void YTMUPrefetchLyrics(NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration);
+// Downloads (background thread, blocks): lyrics saved for offline use right away, returned as
+// LRC / plain text to write into the file's tags. nil when the song has none
+FOUNDATION_EXPORT NSString *YTMULyricsForDownload(NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration);
