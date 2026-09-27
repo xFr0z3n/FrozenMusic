@@ -1,6 +1,7 @@
 #import "PlaylistDownloader.h"
 #import "FFMpegDownloader.h"
 #import "MP3Encoder.h"
+#import "Offline/YTMULyrics.h"
 #import "Headers/YTPlayerViewController.h"
 #import <sys/utsname.h>
 #import <objc/message.h>
@@ -1074,6 +1075,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     NSMutableSet<NSString *> *norms = [NSMutableSet set];
     NSMutableArray<YTMUPlaylistTrack *> *existing = [NSMutableArray array];
     for (YTMUPlaylistTrack *track in tracks) {
+        // Lyrics for every song of the list (already saved ones are skipped), for the offline player
+        YTMUPrefetchLyrics(track.videoID, track.title, track.artist, 0);
         [allIDs addObject:track.videoID];
         NSString *titleKey = YTMUTitleKey(track.title);
         NSString *normKey = YTMUNormTitle(track.title);

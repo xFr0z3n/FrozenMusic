@@ -21,10 +21,12 @@
 - **Full playlists and albums** in one tap: one folder per playlist, track numbers follow the playlist order, songs that are already downloaded are skipped, and the numbering is updated when the playlist order changes
 - **Single songs** as `.m4a` (original quality, no re-encoding) or `.mp3` (LAME)
 - **Complete tags**: title, artist, album, album artist, track number, embedded cover art, plus `cover.png`, creator and description for every playlist
+- **Lyrics** are saved with every song for offline use: YouTube Music's own synced lyrics, with [LRCLIB](https://lrclib.net) as fallback
 
 ### Offline player
 - Mini player and full player with the cover's color hue
 - Queue with reordering, Play next, Add to queue, shuffle and repeat
+- YouTube Music's lyrics screen, offline: synced lyrics that follow the song (tap a line to jump there), **Share** selected lines and **Translate** lyrics in other languages
 - Lock screen and Control Center controls that never interfere with YouTube Music's own player
 
 ### Downloads tab
@@ -100,6 +102,7 @@ Anything set in the app is used instead of the matching build secret.
 
 ### Inspiration & logic reference
 - **[youtube_music_playlist_downloader](https://github.com/ColoradoCrusade/youtube_music_playlist_downloader)** (ColoradoCrusade fork), the logic template for the playlist downloader: one folder per playlist, track number = playlist position, album = playlist name, skipping songs that are already downloaded, renumbering when the playlist order changes, and embedded covers. FrozenMusic additionally writes the playlist name as album artist, which the script didn't.
+- **[LRCLIB](https://lrclib.net)**, free synced lyrics database, used when YouTube Music has no lyrics for a song.
 - **[yt-dlp](https://github.com/yt-dlp/yt-dlp)**, reference for YouTube's InnerTube clients and stream formats while testing a direct-download route. YouTube blocks that route, so none of it ships.
 
 ### Volume boost
@@ -116,6 +119,7 @@ Anything set in the app is used instead of the matching build secret.
 - **[MaxMusic](https://github.com/Mark02-2012/MaxMusic)**, analyzed only: its build is a closed prebuilt `.deb`, which was unpacked to find out why downloads crashed. The lookup of the player data broke in newer YouTube Music versions; the fix in FrozenMusic was written independently and no code was taken.
 
 ### Written for FrozenMusic
+- Offline lyrics: YouTube Music's own (synced) lyrics saved with each download, LRCLIB fallback, YTM-style lyrics screen with Share and Translate
 - Playlist & album download via capture mode (the app's own player loads each song, the stream is captured and the player skips ahead), with title matching and a stall watchdog
 - `.m4a` (original quality) and `.mp3` (LAME) export with full tags, embedded covers, `cover.png`, creator and description
 - Custom ID3v2.3 writer for mp3 and m4a cover embedding

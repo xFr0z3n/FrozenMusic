@@ -137,6 +137,20 @@ static NSString *YTMUMetadataString(AVMetadataItem *item) {
                 } else if ([item.value isKindOfClass:[NSNumber class]] && [(NSNumber *)item.value integerValue] > 0) {
                     track.number = [(NSNumber *)item.value integerValue];
                 }
+            } else if (!track.videoID && ([identifier isEqualToString:AVMetadataIdentifieriTunesMetadataUserComment] ||
+                                          [identifier isEqualToString:AVMetadataIdentifierID3MetadataComments] ||
+                                          [identifier isEqualToString:AVMetadataIdentifierQuickTimeMetadataComment] ||
+                                          [identifier isEqualToString:AVMetadataIdentifierQuickTimeUserDataComment])) {
+                // Downloads keep their YTM link here: https://music.youtube.com/watch?v=<id>
+                NSString *comment = YTMUMetadataString(item);
+                NSRange marker = comment ? [comment rangeOfString:@"watch?v="] : NSMakeRange(NSNotFound, 0);
+                if (marker.location != NSNotFound) {
+                    NSString *rest = [comment substringFromIndex:NSMaxRange(marker)];
+                    NSRange end = [rest rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"] invertedSet]];
+                    NSString *videoID = end.location == NSNotFound ? rest : [rest substringToIndex:end.location];
+                    if (videoID.length >= 6)
+                        track.videoID = videoID;
+                }
             } else if (!track.year && ([identifier isEqualToString:AVMetadataIdentifierID3MetadataYear] ||
                                        [identifier isEqualToString:AVMetadataIdentifieriTunesMetadataReleaseDate])) {
                 NSString *year = YTMUMetadataString(item);

@@ -31,6 +31,7 @@ FOUNDATION_EXPORT BOOL YTMUOfflinePlayerShouldBlockAppNowPlaying(NSDictionary *i
 @property (nonatomic, copy) NSString *albumArtist;
 @property (nonatomic, copy) NSString *year;
 @property (nonatomic, copy) NSString *format;     // "m4a" / "mp3"
+@property (nonatomic, copy) NSString *videoID;    // from the comment tag (music.youtube.com/watch?v=...), for lyrics
 @property (nonatomic) NSInteger number;           // track number (0 = unknown)
 @property (nonatomic) NSTimeInterval duration;
 @property (nonatomic, strong) UIImage *artwork;
