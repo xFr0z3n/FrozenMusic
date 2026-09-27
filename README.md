@@ -21,12 +21,12 @@
 - **Full playlists and albums** in one tap: one folder per playlist, track numbers follow the playlist order, songs that are already downloaded are skipped, and the numbering is updated when the playlist order changes
 - **Single songs** as `.m4a` (original quality, no re-encoding) or `.mp3` (LAME)
 - **Complete tags**: title, artist, album, album artist, track number, embedded cover art, plus `cover.png`, creator and description for every playlist
-- **Lyrics** are saved with every song, playlist and album download for offline use (re-downloading a playlist also fetches lyrics for songs you already have, and older downloads get theirs in the background): YouTube Music's own synced lyrics, with [LRCLIB](https://lrclib.net) as fallback
+- **Lyrics** are part of every song, playlist and album download (saved for the offline player and written into the file's tags, synced as LRC) for offline use (re-downloading a playlist also fetches lyrics for songs you already have, and older downloads get theirs in the background): YouTube Music's own synced lyrics, with [LRCLIB](https://lrclib.net) as fallback
 
 ### Offline player
 - Mini player and full player with the cover's color hue
 - Queue with reordering, Play next, Add to queue, shuffle and repeat
-- YouTube Music's lyrics screen, offline: synced lyrics on the blurred cover that follow the song (tap a line to jump there), **Share** selected lines and **Translate** lyrics in other languages, on device with Apple's translation models (iOS 18+, works offline once iOS has downloaded the languages; older iOS uses Google online)
+- YouTube Music's lyrics screen, offline: synced lyrics on the blurred cover that follow the song (tap a line to jump there), **Share** selected lines and **Translate** lyrics in other languages, offline with Google's on-device ML Kit translation models (iOS 15.5+; each language's model is downloaded once, and lyrics saved with downloads are translated right away)
 - Lock screen and Control Center controls that never interfere with YouTube Music's own player
 
 ### Downloads tab
@@ -112,6 +112,7 @@ Anything set in the app is used instead of the matching build secret.
 
 ### Third-party components
 - **[mobile-ffmpeg](https://github.com/tanersener/mobile-ffmpeg)** (already bundled in YTMusicUltimate): downloads audio and writes m4a tags.
+- **[ML Kit Translation](https://developers.google.com/ml-kit/language/translation)** by Google: on-device translation models for offline lyrics translation, built into its own framework during the GitHub Actions build (see the [ML Kit terms](https://developers.google.com/ml-kit/terms)).
 - **[MBProgressHUD](https://github.com/jdg/MBProgressHUD)** (already bundled in YTMusicUltimate): progress and status popups.
 - **[LAME](https://lame.sourceforge.io/)** 3.100: MP3 encoder, compiled from the [official source](https://sourceforge.net/projects/lame/files/lame/3.100/) during the GitHub Actions build. LAME is licensed under the [GNU LGPL](https://www.gnu.org/licenses/old-licenses/lgpl-2.0.html); its source code is available at the links above.
 

@@ -43,7 +43,7 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
 
     // Argument array instead of one string, so titles with spaces/quotes are safe
     NSMutableArray<NSString *> *arguments = [@[@"-y", @"-i", audioURL, @"-map", @"0:a:0", @"-c", @"copy"] mutableCopy];
-    for (NSString *key in @[@"title", @"artist", @"album", @"album_artist", @"track", @"date", @"comment"]) {
+    for (NSString *key in @[@"title", @"artist", @"album", @"album_artist", @"track", @"date", @"comment", @"lyrics"]) {
         NSString *value = metadata[key];
         if ([value isKindOfClass:[NSString class]] && value.length > 0) {
             [arguments addObject:@"-metadata"];
