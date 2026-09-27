@@ -898,6 +898,10 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
             self.emptyView.hidden = collections.count > 0 || songs.count > 0;
             self.library = nil; // files may have changed (cached tags make this quick)
             [self loadLibraryIfNeeded];
+            // Every song's tags once per change (cached), which also saves missing lyrics for offline use
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                [YTMUCollection libraryTracksInFolder:root collections:collections];
+            });
             if (self.filter == YTMUFilterPlaylists || self.filter == YTMUFilterAlbums)
                 [self updatePeople];
             [self.tableView reloadData];

@@ -2,9 +2,41 @@
 #import "YTMUOfflineUI.h"
 #import "YTMUActionSheet.h"
 #import <QuartzCore/QuartzCore.h>
+#import <CoreImage/CoreImage.h>
 
-static const CGFloat YTMULyricsSideInset = 40;
-static const CGFloat YTMULyricsDimAlpha = 0.35;
+static const CGFloat YTMULyricsSideInset = 43;
+static const CGFloat YTMULyricsDimAlpha = 0.3;
+
+// YTM's lyrics background: the cover itself, heavily blurred (dimmed by an overlay)
+static UIImage *YTMULyricsBackdrop(UIImage *cover) {
+    if (!cover.CGImage)
+        return nil;
+    const CGFloat side = 160;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = 1;
+    format.opaque = YES;
+    UIImage *small = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side) format:format] imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        [cover drawInRect:CGRectMake(0, 0, side, side)];
+    }];
+    CIImage *input = [[CIImage imageWithCGImage:small.CGImage] imageByClampingToExtent];
+    CIFilter *blur = [CIFilter filterWithName:@"CIGaussianBlur"];
+    [blur setValue:input forKey:kCIInputImageKey];
+    [blur setValue:@18 forKey:kCIInputRadiusKey];
+    CIImage *output = [blur.outputImage imageByCroppingToRect:CGRectMake(0, 0, side, side)];
+    if (!output)
+        return nil;
+    static CIContext *context;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        context = [CIContext contextWithOptions:nil];
+    });
+    CGImageRef image = [context createCGImage:output fromRect:output.extent];
+    if (!image)
+        return nil;
+    UIImage *result = [UIImage imageWithCGImage:image];
+    CGImageRelease(image);
+    return result;
+}
 
 #pragma mark - Display link target (holds the screen weakly)
 
@@ -59,8 +91,8 @@ static const CGFloat YTMULyricsDimAlpha = 0.35;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [self.contentView addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:7],
-        [stack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-7],
+        [stack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:6],
+        [stack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-6],
         [stack.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:YTMULyricsSideInset],
         [stack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-YTMULyricsSideInset]
     ]];
@@ -77,26 +109,44 @@ static const CGFloat YTMULyricsDimAlpha = 0.35;
 
 #pragma mark - Pill button (Share / Translate)
 
+// Translucent (blurred, lightly white) pill like YTM's; white with black content when active
+static const NSInteger YTMULyricsPillBlurTag = 7301;
+
 static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
     button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.layer.cornerRadius = 22;
+    button.layer.cornerRadius = 23;
     button.clipsToBounds = YES;
-    button.backgroundColor = [UIColor colorWithWhite:0.2 alpha:0.75];
+    button.backgroundColor = [UIColor clearColor];
+
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
+    blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.1];
+    blur.userInteractionEnabled = NO;
+    blur.tag = YTMULyricsPillBlurTag;
+    blur.frame = button.bounds;
+    blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [button insertSubview:blur atIndex:0];
+
     button.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     [button setTitle:title forState:UIControlStateNormal];
-    [button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    [button setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.4] forState:UIControlStateDisabled];
-    if (symbol) {
-        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightMedium];
-        UIImage *image = [UIImage systemImageNamed:symbol withConfiguration:config];
-        [button setImage:[image imageWithTintColor:[UIColor whiteColor] renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
-        button.imageEdgeInsets = UIEdgeInsetsMake(0, -6, 0, 6);
-        button.titleEdgeInsets = UIEdgeInsetsMake(0, 6, 0, -6);
-    }
-    button.contentEdgeInsets = UIEdgeInsetsMake(0, symbol ? 26 : 22, 0, symbol ? 26 : 22);
-    [button.heightAnchor constraintEqualToConstant:44].active = YES;
+    button.imageEdgeInsets = UIEdgeInsetsMake(0, -5, 0, 5);
+    button.titleEdgeInsets = UIEdgeInsetsMake(0, 5, 0, -5);
+    button.contentEdgeInsets = UIEdgeInsetsMake(0, 25, 0, 25);
+    button.accessibilityIdentifier = symbol;
+    [button.heightAnchor constraintEqualToConstant:46].active = YES;
     return button;
+}
+
+static void YTMUStyleLyricsPill(UIButton *button, BOOL active) {
+    UIColor *content = active ? [UIColor blackColor] : [UIColor whiteColor];
+    [button viewWithTag:YTMULyricsPillBlurTag].hidden = active;
+    button.backgroundColor = active ? [UIColor whiteColor] : [UIColor clearColor];
+    [button setTitleColor:content forState:UIControlStateNormal];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:19 weight:UIImageSymbolWeightRegular];
+    UIImage *icon = [UIImage systemImageNamed:button.accessibilityIdentifier withConfiguration:config];
+    [button setImage:[icon imageWithTintColor:content renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
+    UIView *blur = [button viewWithTag:YTMULyricsPillBlurTag];
+    [button sendSubviewToBack:blur];
 }
 
 #pragma mark - Screen
@@ -107,6 +157,7 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
 @property (nonatomic, copy) NSArray<NSString *> *translation;
 @property (nonatomic) BOOL showsTranslation;
 @property (nonatomic) BOOL translating;
+@property (nonatomic, copy) NSString *translationCredit;  // "Translated on device" / "Translated by Google"
 @property (nonatomic) BOOL selecting;                 // Share: picking lines
 @property (nonatomic, strong) NSMutableIndexSet *selectedLines;
 @property (nonatomic) NSInteger currentLine;
@@ -119,11 +170,11 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *artistLabel;
 @property (nonatomic, strong) UIButton *playButton;
+@property (nonatomic, strong) UIButton *nextButton;
 @property (nonatomic, strong) UILabel *headerLabel;
 @property (nonatomic, strong) UIView *panel;
-@property (nonatomic, strong) CALayer *hueLayer;
-@property (nonatomic, strong) CAGradientLayer *glowLayer;
-@property (nonatomic, strong) CAGradientLayer *topShadeLayer;
+@property (nonatomic, strong) UIImageView *backdropView;
+@property (nonatomic, weak) UIImage *backdropCover;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UILabel *footerLabel;
 @property (nonatomic, strong) UILabel *messageLabel;
@@ -131,8 +182,6 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
 @property (nonatomic, strong) UIStackView *pills;
 @property (nonatomic, strong) UIButton *shareButton;
 @property (nonatomic, strong) UIButton *translateButton;
-@property (nonatomic, strong) UIButton *cancelButton;
-@property (nonatomic, strong) UIButton *confirmShareButton;
 @end
 
 @implementation YTMULyricsViewController
@@ -180,7 +229,14 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     self.playButton.tintColor = [UIColor whiteColor];
     self.playButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.playButton addTarget:self action:@selector(playTapped) forControlEvents:UIControlEventTouchUpInside];
-    for (UIView *view in @[self.artworkView, self.titleLabel, self.artistLabel, self.playButton])
+    // Skip, right of play / pause
+    self.nextButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *nextConfig = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightSemibold];
+    [self.nextButton setImage:[UIImage systemImageNamed:@"forward.end.fill" withConfiguration:nextConfig] forState:UIControlStateNormal];
+    self.nextButton.tintColor = [UIColor whiteColor];
+    self.nextButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.nextButton addTarget:self action:@selector(nextTapped) forControlEvents:UIControlEventTouchUpInside];
+    for (UIView *view in @[self.artworkView, self.titleLabel, self.artistLabel, self.playButton, self.nextButton])
         [miniRow addSubview:view];
 
     UIView *grabber = [UIView new];
@@ -207,24 +263,33 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     [closeButton setImage:[UIImage systemImageNamed:@"xmark" withConfiguration:closeConfig] forState:UIControlStateNormal];
     closeButton.tintColor = [UIColor whiteColor];
     closeButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [closeButton addTarget:self action:@selector(close) forControlEvents:UIControlEventTouchUpInside];
+    [closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
     [header addSubview:self.headerLabel];
     [header addSubview:closeButton];
 
-    // Lyrics on the cover's hue
+    // Lyrics on the blurred cover, like YTM
     self.panel = [UIView new];
     self.panel.clipsToBounds = YES;
+    self.panel.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1];
     self.panel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.hueLayer = [CALayer layer];
-    self.glowLayer = [CAGradientLayer layer];
-    self.glowLayer.type = kCAGradientLayerRadial;
-    self.glowLayer.startPoint = CGPointMake(0.5, 0.0);
-    self.glowLayer.endPoint = CGPointMake(1.25, 0.55);
-    self.topShadeLayer = [CAGradientLayer layer];
-    self.topShadeLayer.colors = @[(__bridge id)[UIColor colorWithWhite:0 alpha:0.35].CGColor, (__bridge id)[UIColor colorWithWhite:0 alpha:0].CGColor];
-    [self.panel.layer addSublayer:self.hueLayer];
-    [self.panel.layer addSublayer:self.glowLayer];
-    [self.panel.layer addSublayer:self.topShadeLayer];
+    self.backdropView = [UIImageView new];
+    self.backdropView.contentMode = UIViewContentModeScaleAspectFill;
+    self.backdropView.translatesAutoresizingMaskIntoConstraints = NO;
+    UIView *dim = [UIView new];
+    dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+    dim.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.panel addSubview:self.backdropView];
+    [self.panel addSubview:dim];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.backdropView.topAnchor constraintEqualToAnchor:self.panel.topAnchor],
+        [self.backdropView.bottomAnchor constraintEqualToAnchor:self.panel.bottomAnchor],
+        [self.backdropView.leadingAnchor constraintEqualToAnchor:self.panel.leadingAnchor],
+        [self.backdropView.trailingAnchor constraintEqualToAnchor:self.panel.trailingAnchor],
+        [dim.topAnchor constraintEqualToAnchor:self.panel.topAnchor],
+        [dim.bottomAnchor constraintEqualToAnchor:self.panel.bottomAnchor],
+        [dim.leadingAnchor constraintEqualToAnchor:self.panel.leadingAnchor],
+        [dim.trailingAnchor constraintEqualToAnchor:self.panel.trailingAnchor]
+    ]];
 
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
     self.tableView.backgroundColor = [UIColor clearColor];
@@ -234,7 +299,7 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 44;
     self.tableView.indicatorStyle = UIScrollViewIndicatorStyleWhite;
-    self.tableView.contentInset = UIEdgeInsetsMake(24, 0, 110, 0);
+    self.tableView.contentInset = UIEdgeInsetsMake(50, 0, 120, 0);
     self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.tableView registerClass:[YTMULyricCell class] forCellReuseIdentifier:@"line"];
     [self.panel addSubview:self.tableView];
@@ -252,18 +317,14 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     [self.panel addSubview:self.messageLabel];
     [self.panel addSubview:self.spinner];
 
-    // Share / Translate, floating at the bottom
+    // Share / Translate, floating at the bottom (Share: pick lines, then Share again)
     self.shareButton = YTMULyricsPill(@"Share", @"arrowshape.turn.up.right");
-    [self.shareButton addTarget:self action:@selector(startSelecting) forControlEvents:UIControlEventTouchUpInside];
-    self.translateButton = YTMULyricsPill(@"Translate", @"character.bubble");
+    [self.shareButton addTarget:self action:@selector(shareTapped) forControlEvents:UIControlEventTouchUpInside];
+    self.translateButton = YTMULyricsPill(@"Translate", @"translate");
     [self.translateButton addTarget:self action:@selector(toggleTranslation) forControlEvents:UIControlEventTouchUpInside];
-    self.cancelButton = YTMULyricsPill(@"Cancel", nil);
-    [self.cancelButton addTarget:self action:@selector(stopSelecting) forControlEvents:UIControlEventTouchUpInside];
-    self.confirmShareButton = YTMULyricsPill(@"Share", @"arrowshape.turn.up.right");
-    [self.confirmShareButton addTarget:self action:@selector(shareSelection) forControlEvents:UIControlEventTouchUpInside];
-    self.pills = [[UIStackView alloc] initWithArrangedSubviews:@[self.shareButton, self.translateButton, self.cancelButton, self.confirmShareButton]];
+    self.pills = [[UIStackView alloc] initWithArrangedSubviews:@[self.shareButton, self.translateButton]];
     self.pills.axis = UILayoutConstraintAxisHorizontal;
-    self.pills.spacing = 12;
+    self.pills.spacing = 18;
     self.pills.translatesAutoresizingMaskIntoConstraints = NO;
     [self.panel addSubview:self.pills];
 
@@ -279,7 +340,11 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
         [self.artworkView.centerYAnchor constraintEqualToAnchor:miniRow.centerYAnchor],
         [self.artworkView.widthAnchor constraintEqualToConstant:48],
         [self.artworkView.heightAnchor constraintEqualToConstant:48],
-        [self.playButton.trailingAnchor constraintEqualToAnchor:miniRow.trailingAnchor constant:-12],
+        [self.nextButton.trailingAnchor constraintEqualToAnchor:miniRow.trailingAnchor constant:-10],
+        [self.nextButton.centerYAnchor constraintEqualToAnchor:miniRow.centerYAnchor],
+        [self.nextButton.widthAnchor constraintEqualToConstant:44],
+        [self.nextButton.heightAnchor constraintEqualToConstant:44],
+        [self.playButton.trailingAnchor constraintEqualToAnchor:self.nextButton.leadingAnchor constant:-4],
         [self.playButton.centerYAnchor constraintEqualToAnchor:miniRow.centerYAnchor],
         [self.playButton.widthAnchor constraintEqualToConstant:44],
         [self.playButton.heightAnchor constraintEqualToConstant:44],
@@ -358,12 +423,6 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    self.hueLayer.frame = self.panel.bounds;
-    self.glowLayer.frame = self.panel.bounds;
-    self.topShadeLayer.frame = CGRectMake(0, 0, self.panel.bounds.size.width, 28);
-    [CATransaction commit];
     [self sizeFooter];
     if (!self.didInitialScroll && self.lyrics.synced && self.tableView.bounds.size.height > 0) {
         self.didInitialScroll = YES;
@@ -376,6 +435,14 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     [self dismissViewControllerAnimated:YTMUAnimations() completion:nil];
 }
 
+// ✕ while picking lines to share: back to the lyrics, else close
+- (void)closeTapped {
+    if (self.selecting)
+        [self stopSelecting];
+    else
+        [self close];
+}
+
 #pragma mark Song
 
 - (void)showTrack {
@@ -385,17 +452,25 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     self.artistLabel.text = track.artist;
     [self refreshPlayButton];
 
-    // Hue: dark version of the cover's color with a lighter glow on top, like YTM
-    UIColor *hue = YTMUHueColor(track.artwork);
-    CGFloat h = 0, sat = 0, bright = 0, alpha = 0;
-    [hue getHue:&h saturation:&sat brightness:&bright alpha:&alpha];
-    self.hueLayer.backgroundColor = [UIColor colorWithHue:h saturation:sat brightness:0.2 alpha:1].CGColor;
-    self.glowLayer.colors = @[(__bridge id)[UIColor colorWithHue:h saturation:sat * 0.9 brightness:0.36 alpha:0.9].CGColor,
-                              (__bridge id)[UIColor colorWithHue:h saturation:sat brightness:0.2 alpha:0].CGColor];
+    // Blurred cover (made off the main thread, once per cover)
+    UIImage *cover = track.artwork;
+    if (cover != self.backdropCover) {
+        self.backdropCover = cover;
+        self.backdropView.image = nil;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            UIImage *backdrop = YTMULyricsBackdrop(cover);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (self.backdropCover == cover)
+                    self.backdropView.image = backdrop;
+            });
+        });
+    }
 
     self.translation = nil;
     self.showsTranslation = NO;
+    self.translating = NO;
     self.selecting = NO;
+    self.headerLabel.text = @"Lyrics";
     [self.selectedLines removeAllIndexes];
     self.currentLine = -1;
     self.autoScrollPausedUntil = nil;
@@ -454,6 +529,10 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
 
 - (void)playTapped {
     [[YTMUOfflinePlayer shared] togglePlayPause];
+}
+
+- (void)nextTapped {
+    [[YTMUOfflinePlayer shared] next];
 }
 
 #pragma mark Sync
@@ -576,8 +655,8 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     NSMutableArray *parts = [NSMutableArray array];
     if (self.lyrics.source.length)
         [parts addObject:self.lyrics.source];
-    if (self.showsTranslation)
-        [parts addObject:@"Translated by Google"];
+    if (self.showsTranslation && self.translationCredit.length)
+        [parts addObject:self.translationCredit];
     self.footerLabel.text = [parts componentsJoinedByString:@"\n"];
     self.tableView.tableFooterView = parts.count ? [self footerContainer] : nil;
     [self sizeFooter];
@@ -610,23 +689,22 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
 
 - (void)refreshPills {
     BOOL hasLyrics = self.lyrics.lines.count > 0;
-    // Translate only when the lyrics aren't in the phone's language
-    BOOL foreign = self.foreignLyrics;
-
-    self.shareButton.hidden = !hasLyrics || self.selecting;
-    self.translateButton.hidden = !hasLyrics || self.selecting || !foreign;
-    self.cancelButton.hidden = !self.selecting;
-    self.confirmShareButton.hidden = !self.selecting;
-    self.confirmShareButton.enabled = self.selectedLines.count > 0;
-    self.confirmShareButton.alpha = self.selectedLines.count > 0 ? 1 : 0.6;
-
-    // Translate on: white pill like YTM's active chips
-    BOOL active = self.showsTranslation;
-    self.translateButton.backgroundColor = active ? [UIColor whiteColor] : [UIColor colorWithWhite:0.2 alpha:0.75];
-    [self.translateButton setTitleColor:active ? [UIColor blackColor] : [UIColor whiteColor] forState:UIControlStateNormal];
+    // Share stays while picking lines (white = active); Translate only for lyrics
+    // that aren't in the phone's language
+    self.shareButton.hidden = !hasLyrics;
+    self.translateButton.hidden = !hasLyrics || self.selecting || !self.foreignLyrics;
+    YTMUStyleLyricsPill(self.shareButton, self.selecting);
+    YTMUStyleLyricsPill(self.translateButton, self.showsTranslation);
     [self.translateButton setTitle:self.translating ? @"Translating…" : @"Translate" forState:UIControlStateNormal];
-    UIImage *icon = [self.translateButton imageForState:UIControlStateNormal];
-    [self.translateButton setImage:[icon imageWithTintColor:active ? [UIColor blackColor] : [UIColor whiteColor] renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
+}
+
+- (void)shareTapped {
+    if (!self.selecting)
+        [self startSelecting];
+    else if (self.selectedLines.count)
+        [self shareSelection];
+    else
+        [self stopSelecting];
 }
 
 - (void)startSelecting {
@@ -663,8 +741,8 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     NSString *text = [NSString stringWithFormat:@"%@\n\n%@", [texts componentsJoinedByString:@"\n"], credit ?: @""];
 
     UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[text] applicationActivities:nil];
-    activity.popoverPresentationController.sourceView = self.confirmShareButton;
-    activity.popoverPresentationController.sourceRect = self.confirmShareButton.bounds;
+    activity.popoverPresentationController.sourceView = self.shareButton;
+    activity.popoverPresentationController.sourceRect = self.shareButton.bounds;
     __weak __typeof(self) weakSelf = self;
     activity.completionWithItemsHandler = ^(UIActivityType type, BOOL completed, NSArray *items, NSError *error) {
         if (completed)
@@ -686,7 +764,7 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
     self.translating = YES;
     [self refreshPills];
     YTMULyrics *lyrics = self.lyrics;
-    [lyrics translationForTrack:self.track completion:^(NSArray<NSString *> *translation) {
+    [lyrics translationForTrack:self.track presenter:self completion:^(NSArray<NSString *> *translation, NSString *credit, NSString *error) {
         self.translating = NO;
         if (self.lyrics != lyrics) {
             [self refreshPills];
@@ -694,10 +772,11 @@ static UIButton *YTMULyricsPill(NSString *title, NSString *symbol) {
         }
         if (!translation) {
             [self refreshPills];
-            YTMUShowInfoBox(self, @"Translation isn't available right now");
+            YTMUShowInfoBox(self, error.length ? error : @"Translation isn't available right now");
             return;
         }
         self.translation = translation;
+        self.translationCredit = credit;
         self.showsTranslation = YES;
         [self translationChanged];
     }];

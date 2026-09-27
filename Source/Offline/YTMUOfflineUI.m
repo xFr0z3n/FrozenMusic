@@ -570,6 +570,9 @@ NSString *YTMUTrackOrderKey(NSURL *folder) {
             @synchronized (cache) {
                 cache[file.path] = @[date ?: [NSNull null], track];
             }
+            // Songs downloaded before lyrics existed get theirs in the background (saved ones are skipped)
+            if (track.videoID.length)
+                YTMUPrefetchLyrics(track.videoID, track.title, track.artist, track.duration);
         }
         [tracks addObject:track];
     }
