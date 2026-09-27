@@ -1,0 +1,11 @@
+name: Lyrics probe
+on:
+  push:
+    branches: [claude/laughing-goldberg-xv661b]
+    paths: ['.github/probe/**', '.github/workflows/lyrics-probe.yml']
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/probe/lyrics_probe.py
