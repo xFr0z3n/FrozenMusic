@@ -2,6 +2,7 @@
 #import "FFMpegDownloader.h"
 #import "MP3Encoder.h"
 #import "Offline/YTMULyrics.h"
+#import "Offline/YTMUOfflinePlayer.h"
 #import "Headers/YTPlayerViewController.h"
 #import <sys/utsname.h>
 #import <objc/message.h>
@@ -1006,11 +1007,6 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     [self.hud hideAnimated:YES];
     self.hud = nil;
 
-    // Lyrics of every song in the list, right away (also when all songs are already downloaded;
-    // saved ones are skipped), for the offline player
-    for (YTMUPlaylistTrack *track in tracks)
-        YTMUPrefetchLyrics(track.videoID, track.title, track.artist, 0);
-
     NSURL *folder = [self folderForTitle:title];
     NSDictionary *index = [self loadIndexInFolder:folder];
     NSUInteger existingM4A = 0, existingMP3 = 0, unavailable = 0;
@@ -1156,6 +1152,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
         NSURL *oldURL = [self.folder URLByAppendingPathComponent:entry[@"file"]];
         NSURL *newURL = [self.folder URLByAppendingPathComponent:fileName];
         if (![fm fileExistsAtPath:newURL.path] && [fm moveItemAtURL:oldURL toURL:newURL error:nil]) {
+            YTMUMoveLyrics(oldURL, newURL);
             if ([self.format isEqualToString:@"mp3"])
                 YTMUPatchMP3TrackNumber(newURL, track.position);
             else
@@ -1490,7 +1487,26 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     NSString *creator = self.creatorName;
     NSString *details = self.collectionDetails;
     NSURL *folder = self.folder;
+    NSDictionary *index = [self.index copy];
     dispatch_async(self.workQueue, ^{
+        // Lyrics of every song of the list (also the ones that were already downloaded),
+        // before it's done; lyrics of songs no longer there are removed
+        if (folder) {
+            [index enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSDictionary *entry, BOOL *stop) {
+                if (![entry isKindOfClass:[NSDictionary class]] || ![entry[@"file"] isKindOfClass:[NSString class]])
+                    return;
+                NSURL *audioURL = [folder URLByAppendingPathComponent:entry[@"file"]];
+                if (![[NSFileManager defaultManager] fileExistsAtPath:audioURL.path])
+                    return;
+                NSURL *lyricsURL = YTMULyricsFileForAudio(audioURL);
+                if ([[NSFileManager defaultManager] fileExistsAtPath:lyricsURL.path])
+                    return;
+                YTMUOfflineTrack *song = [YTMUOfflineTrack lightTrackWithURL:audioURL];
+                NSString *videoID = song.videoID ?: ([key hasPrefix:@"mp3:"] ? [key substringFromIndex:4] : key);
+                YTMUSaveLyricsForDownload(audioURL, videoID, song.title, song.artist, song.duration);
+            }];
+            YTMUCleanLyricsFolder(folder);
+        }
         NSString *creatorImageURL = creatorURL;
         // Albums without a picture on the page: the artist's own page has one
         if (folder && !creatorImageURL && !pageAvatar && artistChannel)
@@ -1580,17 +1596,13 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     }
     metadata[@"track"] = [NSString stringWithFormat:@"%ld", (long)track.position];
     metadata[@"comment"] = [NSString stringWithFormat:@"https://music.youtube.com/watch?v=%@", track.videoID];
-    // Lyrics: saved for the offline player right away and written into the file
-    NSString *lyrics = YTMULyricsForDownload(track.videoID, track.title, artist, 0);
-    if (lyrics.length)
-        metadata[@"lyrics"] = lyrics;
 
     // Download (no re-encoding)
     NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.m4a", track.videoID]];
     [fm removeItemAtPath:tempPath error:nil];
 
     NSMutableArray<NSString *> *arguments = [@[@"-y", @"-i", audioURL, @"-map", @"0:a:0", @"-c", @"copy"] mutableCopy];
-    for (NSString *key in @[@"title", @"artist", @"album", @"album_artist", @"track", @"date", @"comment", @"lyrics"]) {
+    for (NSString *key in @[@"title", @"artist", @"album", @"album_artist", @"track", @"date", @"comment"]) {
         NSString *value = metadata[key];
         if (value.length) {
             [arguments addObject:@"-metadata"];
@@ -1643,6 +1655,9 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 
     self.index[[self indexKeyForVideoID:track.videoID]] = [@{@"file": fileName, @"position": @(track.position)} mutableCopy];
     [self saveIndex:self.index inFolder:self.folder];
+
+    // Lyrics into the folder's Lyrics folder, before the song counts as done
+    YTMUSaveLyricsForDownload(finalURL, track.videoID, track.title, artist, 0);
 
     dispatch_async(dispatch_get_main_queue(), ^{
         self.downloadedCount++;

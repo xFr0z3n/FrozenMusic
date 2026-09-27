@@ -3,6 +3,7 @@
 #import "../Offline/YTMUSearchViewController.h"
 #import "../Offline/YTMUHistory.h"
 #import "../Offline/YTMUActionSheet.h"
+#import "../Offline/YTMULyrics.h"
 
 // Chips at the top, like YTM's Library
 typedef NS_ENUM(NSInteger, YTMUFilter) {
@@ -1105,6 +1106,10 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
         [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
         if (extraURL)
             [[NSFileManager defaultManager] removeItemAtURL:extraURL error:nil];
+        // A song: its lyrics file goes too (a folder takes its Lyrics folder with it)
+        NSString *extension = url.pathExtension.lowercaseString;
+        if ([extension isEqualToString:@"m4a"] || [extension isEqualToString:@"mp3"])
+            YTMUDeleteLyrics(url);
         dispatch_async(dispatch_get_main_queue(), ^{
             [self reloadData];
         });
@@ -1137,6 +1142,8 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
 
         BOOL moved = [[NSFileManager defaultManager] moveItemAtURL:audioURL toURL:newAudioURL error:nil];
         [[NSFileManager defaultManager] moveItemAtURL:coverURL toURL:newCoverURL error:nil];
+        if (moved)
+            YTMUMoveLyrics(audioURL, newAudioURL);
         if (moved) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self reloadData];

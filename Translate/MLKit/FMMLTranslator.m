@@ -4,8 +4,16 @@
 
 @implementation FMMLTranslator
 
-+ (BOOL)isSupported {
-    return YES;
++ (BOOL)isSupportedLanguage:(NSString *)language {
+    return language.length && [MLKTranslateAllLanguages() containsObject:(MLKTranslateLanguage)language];
+}
+
+// English is always on the device, other languages once their model is downloaded
++ (BOOL)isModelReady:(NSString *)language {
+    if ([language isEqualToString:MLKTranslateLanguageEnglish])
+        return YES;
+    MLKTranslateRemoteModel *model = [MLKTranslateRemoteModel translateRemoteModelWithLanguage:(MLKTranslateLanguage)language];
+    return model && [[MLKModelManager modelManager] isModelDownloaded:model];
 }
 
 // One translator per language pair, kept alive while it works
@@ -22,10 +30,25 @@
             MLKTranslatorOptions *options = [[MLKTranslatorOptions alloc] initWithSourceLanguage:(MLKTranslateLanguage)source
                                                                                   targetLanguage:(MLKTranslateLanguage)target];
             translator = [MLKTranslator translatorWithOptions:options];
-            translators[key] = translator;
+            if (translator)
+                translators[key] = translator;
         }
         return translator;
     }
+}
+
++ (void)prepareSource:(NSString *)source target:(NSString *)target {
+    if (![self isSupportedLanguage:source] || ![self isSupportedLanguage:target] || [source isEqualToString:target])
+        return;
+    if ([self isModelReady:source] && [self isModelReady:target])
+        return;
+    MLKTranslator *translator = [self translatorFrom:source to:target];
+    MLKModelDownloadConditions *conditions = [[MLKModelDownloadConditions alloc] initWithAllowsCellularAccess:YES
+                                                                                  allowsBackgroundDownloading:YES];
+    [translator downloadModelIfNeededWithConditions:conditions completion:^(NSError *error) {
+        if (error)
+            NSLog(@"[FrozenMusic] offline translation model not downloaded: %@", error.localizedDescription);
+    }];
 }
 
 + (void)translateTexts:(NSArray<NSString *> *)texts
@@ -37,50 +60,44 @@
             completion(result, error);
         });
     };
-    if (!texts.count || !source.length || !target.length) {
+    if (!texts.count) {
         finish(nil, @"Nothing to translate");
+        return;
+    }
+    if (![self isSupportedLanguage:source] || ![self isSupportedLanguage:target]) {
+        finish(nil, @"This language can't be translated offline");
         return;
     }
     if ([source isEqualToString:target]) {
         finish(texts, nil);
         return;
     }
-
-    MLKTranslator *translator = [self translatorFrom:source to:target];
-    if (!translator) {
-        finish(nil, @"This language can't be translated offline");
+    if (![self isModelReady:source] || ![self isModelReady:target]) {
+        finish(nil, @"No internet, and this language isn't downloaded for offline translation yet. Translate it once with internet.");
         return;
     }
-    // First time for this language: download its model (Wi-Fi or mobile data), then offline
-    MLKModelDownloadConditions *conditions = [[MLKModelDownloadConditions alloc] initWithAllowsCellularAccess:YES
-                                                                                  allowsBackgroundDownloading:YES];
-    [translator downloadModelIfNeededWithConditions:conditions completion:^(NSError *downloadError) {
-        if (downloadError) {
-            finish(nil, @"The translation model couldn't be downloaded");
-            return;
-        }
-        // All lines at once
-        NSMutableArray<NSString *> *results = [NSMutableArray arrayWithCapacity:texts.count];
-        for (NSUInteger i = 0; i < texts.count; i++)
-            [results addObject:@""];
-        __block NSString *failure = nil;
-        dispatch_group_t group = dispatch_group_create();
-        for (NSUInteger i = 0; i < texts.count; i++) {
-            dispatch_group_enter(group);
-            [translator translateText:texts[i] completion:^(NSString *translated, NSError *error) {
-                @synchronized (results) {
-                    if (translated && !error)
-                        results[i] = translated;
-                    else
-                        failure = @"Translation failed";
-                }
-                dispatch_group_leave(group);
-            }];
-        }
-        dispatch_group_notify(group, dispatch_get_main_queue(), ^{
-            finish(failure ? nil : results, failure);
-        });
-    }];
+
+    MLKTranslator *translator = [self translatorFrom:source to:target];
+    NSMutableArray<NSString *> *results = [NSMutableArray arrayWithCapacity:texts.count];
+    for (NSUInteger i = 0; i < texts.count; i++)
+        [results addObject:@""];
+    __block NSString *failure = nil;
+    dispatch_group_t group = dispatch_group_create();
+    for (NSUInteger i = 0; i < texts.count; i++) {
+        dispatch_group_enter(group);
+        [translator translateText:texts[i] completion:^(NSString *translated, NSError *error) {
+            @synchronized (results) {
+                if (translated && !error)
+                    results[i] = translated;
+                else
+                    failure = @"Offline translation failed";
+            }
+            dispatch_group_leave(group);
+        }];
+    }
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        finish(failure ? nil : results, failure);
+    });
 }
 
 @end

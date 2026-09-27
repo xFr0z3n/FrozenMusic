@@ -816,10 +816,6 @@ void YTMUPauseAppPlayer(void) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *audioURL = manifestURL ? [self ytmu_audioURLFromManifest:[NSURL URLWithString:manifestURL]] : nil;
         NSData *coverData = thumbnailURL ? [NSData dataWithContentsOfURL:[NSURL URLWithString:thumbnailURL]] : nil;
-        // Lyrics: saved for the offline player right away and written into the file
-        NSString *lyrics = audioURL.length ? YTMULyricsForDownload(videoID, title, artist, duration) : nil;
-        if (lyrics.length)
-            metadata[@"lyrics"] = lyrics;
 
         dispatch_async(dispatch_get_main_queue(), ^{
             if (audioURL.length == 0) {
@@ -835,6 +831,7 @@ void YTMUPauseAppPlayer(void) {
             ffmpeg.mediaName = mediaName;
             ffmpeg.duration = (NSInteger)round(duration);
             ffmpeg.format = format;
+            ffmpeg.videoID = videoID; // lyrics go into YTMusicUltimate/Lyrics with the song
             [ffmpeg downloadAudio:audioURL metadata:metadata coverData:coverData];
         });
     });

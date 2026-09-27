@@ -14,6 +14,7 @@
 @property (nonatomic, strong) NSString *mediaName;
 @property (nonatomic) NSInteger duration;
 @property (nonatomic, copy) NSString *format; // "m4a" (default) or "mp3"
+@property (nonatomic, copy) NSString *videoID; // set: the song's lyrics are saved to YTMusicUltimate/Lyrics
 
 // metadata keys: title, artist, album, album_artist, track, date, comment
 - (void)downloadAudio:(NSString *)audioURL metadata:(NSDictionary<NSString *, NSString *> *)metadata coverData:(NSData *)coverData;
