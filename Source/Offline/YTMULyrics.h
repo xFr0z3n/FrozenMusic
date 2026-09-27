@@ -8,32 +8,40 @@
 @property (nonatomic, copy) NSString *text;
 @end
 
-// Lyrics of a song, saved in the app for offline use (by video ID, so renaming
-// or reordering downloads never loses them). YouTube Music's own lyrics first
-// (synced when it has them), LRCLIB as fallback.
+// Lyrics of a song: YouTube Music's own lyrics first (synced when it has them),
+// LRCLIB as fallback.
 @interface YTMULyrics : NSObject
 @property (nonatomic, copy) NSArray<YTMULyricLine *> *lines;
 @property (nonatomic) BOOL synced;
 @property (nonatomic, copy) NSString *source; // "Source: LyricFind"
 
-// Saved lyrics, else fetched (online). nil = none available. Completion on the main queue.
+// Lyrics are plain .lrc files in a "Lyrics" folder next to the songs: in the playlist /
+// album folder, or in YTMusicUltimate for single songs ("Lyrics/<song file name>.lrc").
+// Nothing is kept inside the app or written into the music files.
+
+// Saved lyrics, else fetched (online) and saved. nil = none available. Completion on the main queue.
 + (void)loadForTrack:(YTMUOfflineTrack *)track completion:(void (^)(YTMULyrics *lyrics, BOOL offline))completion;
 + (YTMULyrics *)savedLyricsForTrack:(YTMUOfflineTrack *)track;
 
 // Language the lyrics are in (nil if unsure) and the device language
 - (NSString *)languageCode;
 + (NSString *)deviceLanguageCode;
-// One translated string per line (empty for ♪ / blank lines), saved after the first time.
-// Offline with Google's on-device ML Kit models (iOS 15.5+, each language's model is
-// downloaded once; lyrics saved by downloads are translated right away). Builds without
-// the ML Kit framework use Google online. Main queue.
+// One translated string per line (empty for ♪ / blank lines). Google when there's internet,
+// without internet Google's on-device ML Kit model (its language is downloaded while online,
+// e.g. when the song is downloaded). Never hangs: answers within ~20 s. Main queue.
 - (void)translationForTrack:(YTMUOfflineTrack *)track presenter:(UIViewController *)presenter
                  completion:(void (^)(NSArray<NSString *> *translation, NSString *credit, NSString *error))completion;
 + (BOOL)canTranslateOnDevice;
 @end
 
-// Downloads call this: fetch + save the lyrics in the background (skipped when already saved)
-FOUNDATION_EXPORT void YTMUPrefetchLyrics(NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration);
-// Downloads (background thread, blocks): lyrics saved for offline use right away, returned as
-// LRC / plain text to write into the file's tags. nil when the song has none
-FOUNDATION_EXPORT NSString *YTMULyricsForDownload(NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration);
+// "Lyrics/<song>.lrc" of a downloaded song
+FOUNDATION_EXPORT NSURL *YTMULyricsFileForAudio(NSURL *audioURL);
+// Downloads (background thread, blocks): writes the song's lyrics file. NO when it has none
+FOUNDATION_EXPORT BOOL YTMUSaveLyricsForDownload(NSURL *audioURL, NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration);
+// Same in the background, once per launch (songs downloaded before lyrics existed)
+FOUNDATION_EXPORT void YTMUPrefetchLyricsForSong(NSURL *audioURL, NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration);
+// Lyrics follow their song when it's renamed / deleted
+FOUNDATION_EXPORT void YTMUMoveLyrics(NSURL *fromAudioURL, NSURL *toAudioURL);
+FOUNDATION_EXPORT void YTMUDeleteLyrics(NSURL *audioURL);
+// Removes lyrics of songs no longer in the folder
+FOUNDATION_EXPORT void YTMUCleanLyricsFolder(NSURL *folder);

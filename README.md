@@ -21,12 +21,12 @@
 - **Full playlists and albums** in one tap: one folder per playlist, track numbers follow the playlist order, songs that are already downloaded are skipped, and the numbering is updated when the playlist order changes
 - **Single songs** as `.m4a` (original quality, no re-encoding) or `.mp3` (LAME)
 - **Complete tags**: title, artist, album, album artist, track number, embedded cover art, plus `cover.png`, creator and description for every playlist
-- **Lyrics** are part of every song, playlist and album download (saved for the offline player and written into the file's tags, synced as LRC) for offline use (re-downloading a playlist also fetches lyrics for songs you already have, and older downloads get theirs in the background): YouTube Music's own synced lyrics, with [LRCLIB](https://lrclib.net) as fallback
+- **Lyrics** are part of every song, playlist and album download: saved as `.lrc` files in a `Lyrics` folder inside the playlist / album folder (single songs: `YTMusicUltimate/Lyrics`), so they work offline right away. Updating a playlist also fetches lyrics for songs you already have, and older downloads get theirs in the background. YouTube Music's own synced lyrics, with [LRCLIB](https://lrclib.net) as fallback
 
 ### Offline player
 - Mini player and full player with the cover's color hue
 - Queue with reordering, Play next, Add to queue, shuffle and repeat
-- YouTube Music's lyrics screen, offline: synced lyrics on the blurred cover that follow the song (tap a line to jump there), **Share** selected lines and **Translate** lyrics in other languages, offline with Google's on-device ML Kit translation models (iOS 15.5+; each language's model is downloaded once, and lyrics saved with downloads are translated right away)
+- YouTube Music's lyrics screen, offline: synced lyrics on the blurred cover that follow the song (tap a line to jump there), **Share** selected lines and **Translate** lyrics in other languages: with Google when there's internet, without internet with Google's on-device ML Kit models (iOS 15.5+; the language model is downloaded while online, e.g. when the song is downloaded)
 - Lock screen and Control Center controls that never interfere with YouTube Music's own player
 
 ### Downloads tab
@@ -120,7 +120,7 @@ Anything set in the app is used instead of the matching build secret.
 - **[MaxMusic](https://github.com/Mark02-2012/MaxMusic)**, analyzed only: its build is a closed prebuilt `.deb`, which was unpacked to find out why downloads crashed. The lookup of the player data broke in newer YouTube Music versions; the fix in FrozenMusic was written independently and no code was taken.
 
 ### Written for FrozenMusic
-- Offline lyrics: YouTube Music's own (synced) lyrics saved with each download, LRCLIB fallback, YTM-style lyrics screen with Share and Translate
+- Offline lyrics: YouTube Music's own (synced) lyrics saved as `.lrc` files with each download, LRCLIB fallback, YTM-style lyrics screen with Share and Translate (online / offline)
 - Playlist & album download via capture mode (the app's own player loads each song, the stream is captured and the player skips ahead), with title matching and a stall watchdog
 - `.m4a` (original quality) and `.mp3` (LAME) export with full tags, embedded covers, `cover.png`, creator and description
 - Custom ID3v2.3 writer for mp3 and m4a cover embedding

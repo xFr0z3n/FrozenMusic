@@ -2,39 +2,46 @@
 #import "YTMUOfflineUI.h"
 #import "YTMUActionSheet.h"
 #import <QuartzCore/QuartzCore.h>
-#import <CoreImage/CoreImage.h>
 
 static const CGFloat YTMULyricsSideInset = 43;
 static const CGFloat YTMULyricsDimAlpha = 0.3;
 
-// YTM's lyrics background: the cover itself, heavily blurred (dimmed by an overlay)
+// YTM's lyrics background: the cover itself, heavily blurred (dimmed by an overlay).
+// Shrinking the cover to a few pixels and smoothly scaling it back up gives the same soft
+// color blobs as a big blur, in a millisecond and without Core Image (so it's there on
+// the very first frame). Cached per cover.
 static UIImage *YTMULyricsBackdrop(UIImage *cover) {
     if (!cover.CGImage)
         return nil;
-    const CGFloat side = 160;
+    static NSCache<UIImage *, UIImage *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSCache new];
+        cache.countLimit = 20;
+    });
+    UIImage *cached = [cache objectForKey:cover];
+    if (cached)
+        return cached;
+
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.scale = 1;
     format.opaque = YES;
-    UIImage *small = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side) format:format] imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        [cover drawInRect:CGRectMake(0, 0, side, side)];
+    // 1. Tiny: 10 x 10 averages the cover into its main color areas
+    UIImage *tiny = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(10, 10) format:format] imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextSetInterpolationQuality(context.CGContext, kCGInterpolationHigh);
+        [cover drawInRect:CGRectMake(0, 0, 10, 10)];
     }];
-    CIImage *input = [[CIImage imageWithCGImage:small.CGImage] imageByClampingToExtent];
-    CIFilter *blur = [CIFilter filterWithName:@"CIGaussianBlur"];
-    [blur setValue:input forKey:kCIInputImageKey];
-    [blur setValue:@18 forKey:kCIInputRadiusKey];
-    CIImage *output = [blur.outputImage imageByCroppingToRect:CGRectMake(0, 0, side, side)];
-    if (!output)
-        return nil;
-    static CIContext *context;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        context = [CIContext contextWithOptions:nil];
-    });
-    CGImageRef image = [context createCGImage:output fromRect:output.extent];
-    if (!image)
-        return nil;
-    UIImage *result = [UIImage imageWithCGImage:image];
-    CGImageRelease(image);
+    // 2. Back up in two smooth steps (no blocky pixels)
+    UIImage *soft = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40) format:format] imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextSetInterpolationQuality(context.CGContext, kCGInterpolationHigh);
+        [tiny drawInRect:CGRectMake(-4, -4, 48, 48)];
+    }];
+    UIImage *result = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(160, 160) format:format] imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextSetInterpolationQuality(context.CGContext, kCGInterpolationHigh);
+        [soft drawInRect:CGRectMake(-16, -16, 192, 192)];
+    }];
+    if (result)
+        [cache setObject:result forKey:cover];
     return result;
 }
 
@@ -278,6 +285,7 @@ static void YTMUStyleLyricsPill(UIButton *button, BOOL active) {
     self.panel.translatesAutoresizingMaskIntoConstraints = NO;
     self.backdropView = [UIImageView new];
     self.backdropView.contentMode = UIViewContentModeScaleAspectFill;
+    self.backdropView.layer.magnificationFilter = kCAFilterTrilinear; // smooth, no pixels
     self.backdropView.translatesAutoresizingMaskIntoConstraints = NO;
     UIView *dim = [UIView new];
     dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
@@ -456,18 +464,12 @@ static void YTMUStyleLyricsPill(UIButton *button, BOOL active) {
     self.artistLabel.text = track.artist;
     [self refreshPlayButton];
 
-    // Blurred cover (made off the main thread, once per cover)
+    // Blurred cover, right away (the cover is loaded first when needed)
+    [track loadArtworkIfNeeded];
     UIImage *cover = track.artwork;
-    if (cover != self.backdropCover) {
+    if (cover != self.backdropCover || !self.backdropView.image) {
         self.backdropCover = cover;
-        self.backdropView.image = nil;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            UIImage *backdrop = YTMULyricsBackdrop(cover);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (self.backdropCover == cover)
-                    self.backdropView.image = backdrop;
-            });
-        });
+        self.backdropView.image = YTMULyricsBackdrop(cover);
     }
 
     self.translation = nil;

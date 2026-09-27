@@ -9,62 +9,33 @@
 @implementation YTMULyricLine
 @end
 
-#pragma mark - Storage (Application Support/FrozenMusic/Lyrics/<video ID>.json)
+#pragma mark - Earlier versions kept lyrics inside the app: read once, moved to the Lyrics folder
 
-static const NSTimeInterval YTMULyricsMissingRetry = 24 * 60 * 60; // "none" is asked again after a day
-
-static NSURL *YTMULyricsFolder(void) {
-    static NSURL *folder;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        NSURL *support = [[[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask] firstObject];
-        folder = [[support URLByAppendingPathComponent:@"FrozenMusic" isDirectory:YES] URLByAppendingPathComponent:@"Lyrics" isDirectory:YES];
-        [[NSFileManager defaultManager] createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:nil];
-    });
-    return folder;
-}
-
-// Video ID when known, else a hash of title + artist (songs that didn't come from YTM)
-static NSString *YTMULyricsKey(NSString *videoID, NSString *title, NSString *artist) {
+static NSURL *YTMULegacyFile(NSString *videoID, NSString *title, NSString *artist) {
+    NSURL *support = [[[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask] firstObject];
+    NSURL *folder = [[support URLByAppendingPathComponent:@"FrozenMusic" isDirectory:YES] URLByAppendingPathComponent:@"Lyrics" isDirectory:YES];
     NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"] invertedSet];
-    if (videoID.length >= 6 && [videoID rangeOfCharacterFromSet:invalid].location == NSNotFound)
-        return videoID;
-    if (!title.length)
-        return nil;
-    NSString *text = [[NSString stringWithFormat:@"%@|%@", title, artist ?: @""] lowercaseString];
-    const char *cString = text.UTF8String;
-    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
-    CC_SHA1(cString, (CC_LONG)strlen(cString), digest);
-    NSMutableString *hash = [NSMutableString stringWithString:@"t_"];
-    for (int i = 0; i < 10; i++)
-        [hash appendFormat:@"%02x", digest[i]];
-    return hash;
+    NSString *key = nil;
+    if (videoID.length >= 6 && [videoID rangeOfCharacterFromSet:invalid].location == NSNotFound) {
+        key = videoID;
+    } else if (title.length) {
+        NSString *text = [[NSString stringWithFormat:@"%@|%@", title, artist ?: @""] lowercaseString];
+        const char *cString = text.UTF8String;
+        unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+        CC_SHA1(cString, (CC_LONG)strlen(cString), digest);
+        NSMutableString *hash = [NSMutableString stringWithString:@"t_"];
+        for (int i = 0; i < 10; i++)
+            [hash appendFormat:@"%02x", digest[i]];
+        key = hash;
+    }
+    return key ? [folder URLByAppendingPathComponent:[key stringByAppendingPathExtension:@"json"]] : nil;
 }
 
-static NSURL *YTMULyricsFile(NSString *key) {
-    return [YTMULyricsFolder() URLByAppendingPathComponent:[key stringByAppendingPathExtension:@"json"]];
-}
-
-static NSDictionary *YTMULyricsRead(NSString *key) {
-    if (!key)
-        return nil;
-    NSData *data = [NSData dataWithContentsOfURL:YTMULyricsFile(key)];
-    id json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-    return [json isKindOfClass:[NSDictionary class]] ? json : nil;
-}
-
-static void YTMULyricsWrite(NSString *key, NSDictionary *json) {
-    NSData *data = key ? [NSJSONSerialization dataWithJSONObject:json options:0 error:nil] : nil;
-    [data writeToURL:YTMULyricsFile(key) atomically:YES];
-}
-
-static BOOL YTMULyricsMissingIsFresh(NSDictionary *json) {
-    return [json[@"missing"] boolValue] &&
-           [[NSDate date] timeIntervalSince1970] - [json[@"date"] doubleValue] < YTMULyricsMissingRetry;
-}
-
-static YTMULyrics *YTMULyricsFromJSON(NSDictionary *json) {
-    NSArray *rows = json[@"lines"];
+static YTMULyrics *YTMULegacyLyrics(NSString *videoID, NSString *title, NSString *artist) {
+    NSURL *file = YTMULegacyFile(videoID, title, artist);
+    NSData *data = file ? [NSData dataWithContentsOfURL:file] : nil;
+    NSDictionary *json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    NSArray *rows = [json isKindOfClass:[NSDictionary class]] ? json[@"lines"] : nil;
     if (![rows isKindOfClass:[NSArray class]] || rows.count == 0)
         return nil;
     NSMutableArray *lines = [NSMutableArray array];
@@ -86,14 +57,10 @@ static YTMULyrics *YTMULyricsFromJSON(NSDictionary *json) {
     return lyrics;
 }
 
-static NSDictionary *YTMULyricsToJSON(YTMULyrics *lyrics) {
-    NSMutableArray *rows = [NSMutableArray array];
-    for (YTMULyricLine *line in lyrics.lines)
-        [rows addObject:@[@(line.time < 0 ? -1 : llround(line.time * 1000)), line.text ?: @""]];
-    NSMutableDictionary *json = [@{@"v": @1, @"synced": @(lyrics.synced), @"lines": rows} mutableCopy];
-    if (lyrics.source.length)
-        json[@"source"] = lyrics.source;
-    return json;
+static void YTMUForgetLegacyLyrics(NSString *videoID, NSString *title, NSString *artist) {
+    NSURL *file = YTMULegacyFile(videoID, title, artist);
+    if (file)
+        [[NSFileManager defaultManager] removeItemAtURL:file error:nil];
 }
 
 #pragma mark - Network (background queues only)
@@ -398,25 +365,8 @@ static YTMULyrics *YTMUFetchLyrics(NSString *videoID, NSString *title, NSString 
     return lyrics;
 }
 
-static void YTMUPretranslate(NSString *key, YTMULyrics *lyrics);
 
-// Fetch + save (lyrics, or a "none" marker when nothing exists)
-static YTMULyrics *YTMUFetchAndSave(NSString *key, NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration, BOOL *offline) {
-    BOOL noNetwork = NO;
-    YTMULyrics *lyrics = YTMUFetchLyrics(videoID, title, artist, duration, &noNetwork);
-    if (lyrics) {
-        YTMULyricsWrite(key, YTMULyricsToJSON(lyrics));
-        // Other language: translated offline right away, ready without internet
-        YTMUPretranslate(key, lyrics);
-    }
-    else if (!noNetwork)
-        YTMULyricsWrite(key, @{@"v": @1, @"missing": @YES, @"date": @([[NSDate date] timeIntervalSince1970])});
-    if (offline)
-        *offline = noNetwork;
-    return lyrics;
-}
-
-// Lyrics as LRC text ("[mm:ss.xx] line" when synced), what gets written into the file's tags
+// Lyrics as LRC text ("[mm:ss.xx] line" when synced)
 static NSString *YTMULyricsLRC(YTMULyrics *lyrics) {
     NSMutableArray *rows = [NSMutableArray array];
     for (YTMULyricLine *line in lyrics.lines) {
@@ -431,7 +381,8 @@ static NSString *YTMULyricsLRC(YTMULyrics *lyrics) {
     return rows.count ? [rows componentsJoinedByString:@"\n"] : nil;
 }
 
-// Lyrics written into a downloaded file (©lyr / USLT): LRC or plain text
+// Lyrics the previous version wrote into downloaded files (©lyr / USLT): read once to move
+// them into the Lyrics folder
 static YTMULyrics *YTMUEmbeddedLyrics(NSURL *url) {
     if (!url)
         return nil;
@@ -454,7 +405,150 @@ static YTMULyrics *YTMUEmbeddedLyrics(NSURL *url) {
     return nil;
 }
 
-// Some downloads at once, a short pause after each (YouTube doesn't like bursts)
+#pragma mark - Lyrics files: "Lyrics/<song>.lrc" next to the songs
+// (in the playlist / album folder, or in YTMusicUltimate for single songs)
+
+NSURL *YTMULyricsFileForAudio(NSURL *audioURL) {
+    if (!audioURL.isFileURL || !audioURL.lastPathComponent.length)
+        return nil;
+    NSURL *folder = [[audioURL URLByDeletingLastPathComponent] URLByAppendingPathComponent:@"Lyrics" isDirectory:YES];
+    return [folder URLByAppendingPathComponent:[audioURL.lastPathComponent.stringByDeletingPathExtension stringByAppendingPathExtension:@"lrc"]];
+}
+
+static NSString *YTMULyricsTagValue(NSString *text) {
+    NSString *flat = [[text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
+    return [flat stringByReplacingOccurrencesOfString:@"]" withString:@")"];
+}
+
+// Standard LRC: [ti:] [ar:] tags, our [source:] tag, then the lines
+static NSString *YTMULyricsFileText(YTMULyrics *lyrics, NSString *title, NSString *artist) {
+    NSMutableString *text = [NSMutableString string];
+    if (title.length)
+        [text appendFormat:@"[ti:%@]\n", YTMULyricsTagValue(title)];
+    if (artist.length)
+        [text appendFormat:@"[ar:%@]\n", YTMULyricsTagValue(artist)];
+    if (lyrics.source.length)
+        [text appendFormat:@"[source:%@]\n", YTMULyricsTagValue(lyrics.source)];
+    NSString *body = YTMULyricsLRC(lyrics);
+    if (body.length)
+        [text appendFormat:@"%@\n", body];
+    return text;
+}
+
+static YTMULyrics *YTMULyricsFromFileText(NSString *text) {
+    NSRegularExpression *tag = [NSRegularExpression regularExpressionWithPattern:@"^\\[([A-Za-z]+):(.*)\\]\\s*$" options:0 error:nil];
+    NSRegularExpression *timed = [NSRegularExpression regularExpressionWithPattern:@"^\\[\\d+:\\d+" options:0 error:nil];
+    NSString *source = nil;
+    BOOL synced = NO;
+    NSMutableArray<NSString *> *rows = [NSMutableArray array];
+    NSString *unified = [[text stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"] stringByReplacingOccurrencesOfString:@"\r" withString:@"\n"];
+    for (NSString *row in [unified componentsSeparatedByString:@"\n"]) {
+        NSTextCheckingResult *match = [tag firstMatchInString:row options:0 range:NSMakeRange(0, row.length)];
+        if (match) {
+            if ([[[row substringWithRange:[match rangeAtIndex:1]] lowercaseString] isEqualToString:@"source"])
+                source = [[row substringWithRange:[match rangeAtIndex:2]] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            continue;
+        }
+        if ([timed firstMatchInString:row options:0 range:NSMakeRange(0, row.length)])
+            synced = YES;
+        [rows addObject:row];
+    }
+    NSString *body = [rows componentsJoinedByString:@"\n"];
+    YTMULyrics *lyrics = synced ? YTMUParseLRC(body) : YTMUUnsyncedLyrics(body, nil);
+    lyrics.source = source.length ? source : nil;
+    return lyrics;
+}
+
+static YTMULyrics *YTMUReadLyricsFile(NSURL *audioURL) {
+    NSURL *file = YTMULyricsFileForAudio(audioURL);
+    NSString *text = file ? [NSString stringWithContentsOfURL:file encoding:NSUTF8StringEncoding error:nil] : nil;
+    return text.length ? YTMULyricsFromFileText(text) : nil;
+}
+
+static BOOL YTMUWriteLyricsFile(NSURL *audioURL, YTMULyrics *lyrics, NSString *title, NSString *artist) {
+    NSURL *file = YTMULyricsFileForAudio(audioURL);
+    if (!file || !lyrics.lines.count)
+        return NO;
+    [[NSFileManager defaultManager] createDirectoryAtURL:[file URLByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+    return [YTMULyricsFileText(lyrics, title, artist) writeToURL:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
+void YTMUMoveLyrics(NSURL *fromAudioURL, NSURL *toAudioURL) {
+    NSURL *from = YTMULyricsFileForAudio(fromAudioURL), *to = YTMULyricsFileForAudio(toAudioURL);
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (!from || !to || [from isEqual:to] || ![fm fileExistsAtPath:from.path])
+        return;
+    [fm createDirectoryAtURL:[to URLByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+    [fm removeItemAtURL:to error:nil];
+    [fm moveItemAtURL:from toURL:to error:nil];
+}
+
+void YTMUDeleteLyrics(NSURL *audioURL) {
+    NSURL *file = YTMULyricsFileForAudio(audioURL);
+    if (!file)
+        return;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm removeItemAtURL:file error:nil];
+    NSURL *folder = [file URLByDeletingLastPathComponent];
+    if (![fm contentsOfDirectoryAtPath:folder.path error:nil].count)
+        [fm removeItemAtURL:folder error:nil];
+}
+
+void YTMUCleanLyricsFolder(NSURL *folder) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSURL *lyricsFolder = [folder URLByAppendingPathComponent:@"Lyrics" isDirectory:YES];
+    NSArray<NSURL *> *lyricsFiles = [fm contentsOfDirectoryAtURL:lyricsFolder includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
+    if (!lyricsFiles.count)
+        return;
+    NSMutableSet<NSString *> *songs = [NSMutableSet set];
+    for (NSURL *file in [fm contentsOfDirectoryAtURL:folder includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles error:nil]) {
+        NSString *extension = file.pathExtension.lowercaseString;
+        if ([extension isEqualToString:@"m4a"] || [extension isEqualToString:@"mp3"])
+            [songs addObject:file.lastPathComponent.stringByDeletingPathExtension];
+    }
+    // Lyrics of songs that are gone
+    for (NSURL *file in lyricsFiles) {
+        if ([file.pathExtension.lowercaseString isEqualToString:@"lrc"] && ![songs containsObject:file.lastPathComponent.stringByDeletingPathExtension])
+            [fm removeItemAtURL:file error:nil];
+    }
+    if (![fm contentsOfDirectoryAtPath:lyricsFolder.path error:nil].count)
+        [fm removeItemAtURL:lyricsFolder error:nil];
+}
+
+static void YTMUPrepareOfflineTranslation(YTMULyrics *lyrics);
+
+// Lyrics file of a song: already there, moved over from an earlier version, else fetched.
+// *unreliable: no internet / YouTube busy (worth trying again later)
+static YTMULyrics *YTMUEnsureLyricsFile(NSURL *audioURL, NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration, BOOL *unreliable) {
+    YTMULyrics *lyrics = YTMUReadLyricsFile(audioURL);
+    if (lyrics)
+        return lyrics;
+    lyrics = YTMULegacyLyrics(videoID, title, artist) ?: YTMUEmbeddedLyrics(audioURL);
+    BOOL noNetwork = NO;
+    if (!lyrics)
+        lyrics = YTMUFetchLyrics(videoID, title, artist, duration, &noNetwork);
+    if (lyrics && YTMUWriteLyricsFile(audioURL, lyrics, title, artist)) {
+        YTMUForgetLegacyLyrics(videoID, title, artist);
+        // Other language: get the offline translation model now, while there's internet
+        YTMUPrepareOfflineTranslation(lyrics);
+    }
+    if (unreliable)
+        *unreliable = !lyrics && noNetwork;
+    return lyrics;
+}
+
+BOOL YTMUSaveLyricsForDownload(NSURL *audioURL, NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration) {
+    BOOL unreliable = NO;
+    YTMULyrics *lyrics = YTMUEnsureLyricsFile(audioURL, videoID, title, artist, duration, &unreliable);
+    if (!lyrics && unreliable) {
+        // YouTube busy / connection hiccup: once more after a moment
+        [NSThread sleepForTimeInterval:2];
+        lyrics = YTMUEnsureLyricsFile(audioURL, videoID, title, artist, duration, NULL);
+    }
+    return lyrics != nil;
+}
+
+// A few at once, a short pause after each (YouTube doesn't like bursts)
 static void YTMULyricsBackground(dispatch_block_t work) {
     static dispatch_queue_t queue;
     static dispatch_semaphore_t slots;
@@ -471,83 +565,42 @@ static void YTMULyricsBackground(dispatch_block_t work) {
     });
 }
 
-static void YTMUPrefetchLyricsAttempt(NSString *key, NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration, NSInteger attempt) {
-    YTMULyricsBackground(^{
-        NSDictionary *saved = YTMULyricsRead(key);
-        if (saved[@"lines"] || YTMULyricsMissingIsFresh(saved))
+void YTMUPrefetchLyricsForSong(NSURL *audioURL, NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration) {
+    NSURL *file = YTMULyricsFileForAudio(audioURL);
+    if (!file || [[NSFileManager defaultManager] fileExistsAtPath:file.path])
+        return;
+    // Once per song and app launch (songs without lyrics aren't asked over and over)
+    static NSMutableSet<NSString *> *asked;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        asked = [NSMutableSet set];
+    });
+    @synchronized (asked) {
+        if ([asked containsObject:audioURL.path])
             return;
-        BOOL unreliable = NO;
-        YTMUFetchAndSave(key, videoID, title, artist, duration, &unreliable);
-        // No internet / rate limited: try again a bit later
-        if (unreliable && attempt < 3) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * (attempt + 1) * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-                YTMUPrefetchLyricsAttempt(key, videoID, title, artist, duration, attempt + 1);
-            });
-        }
+        [asked addObject:audioURL.path];
+    }
+    YTMULyricsBackground(^{
+        YTMUSaveLyricsForDownload(audioURL, videoID, title, artist, duration);
     });
 }
 
-void YTMUPrefetchLyrics(NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration) {
-    NSString *key = YTMULyricsKey(videoID, title, artist);
-    if (key)
-        YTMUPrefetchLyricsAttempt(key, videoID, title, artist, duration, 0);
-}
-
-NSString *YTMULyricsForDownload(NSString *videoID, NSString *title, NSString *artist, NSTimeInterval duration) {
-    NSString *key = YTMULyricsKey(videoID, title, artist);
-    if (!key)
-        return nil;
-    NSDictionary *saved = YTMULyricsRead(key);
-    YTMULyrics *lyrics = YTMULyricsFromJSON(saved);
-    if (!lyrics && !YTMULyricsMissingIsFresh(saved)) {
-        BOOL unreliable = NO;
-        lyrics = YTMUFetchAndSave(key, videoID, title, artist, duration, &unreliable);
-        if (!lyrics && unreliable) // one more try, then the background retries take over
-            lyrics = YTMUFetchAndSave(key, videoID, title, artist, duration, &unreliable);
-        if (!lyrics && unreliable)
-            YTMUPrefetchLyrics(videoID, title, artist, duration);
-    }
-    return lyrics ? YTMULyricsLRC(lyrics) : nil;
-}
 
 #pragma mark - YTMULyrics
 
 @implementation YTMULyrics
 
-+ (NSString *)keyForTrack:(YTMUOfflineTrack *)track {
-    return YTMULyricsKey(track.videoID, track.title, track.artist);
-}
-
-// Saved in the app, else written into the file itself (then saved for next time)
 + (YTMULyrics *)savedLyricsForTrack:(YTMUOfflineTrack *)track {
-    NSString *key = [self keyForTrack:track];
-    YTMULyrics *lyrics = YTMULyricsFromJSON(YTMULyricsRead(key));
-    if (!lyrics) {
-        lyrics = YTMUEmbeddedLyrics(track.url);
-        if (lyrics && key)
-            YTMULyricsWrite(key, YTMULyricsToJSON(lyrics));
-    }
-    return lyrics;
+    return YTMUReadLyricsFile(track.url);
 }
 
 + (void)loadForTrack:(YTMUOfflineTrack *)track completion:(void (^)(YTMULyrics *, BOOL))completion {
-    NSString *key = [self keyForTrack:track];
     NSString *videoID = track.videoID, *title = track.title, *artist = track.artist;
     NSURL *url = track.url;
     NSTimeInterval duration = track.duration;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        YTMULyrics *lyrics = nil;
         BOOL offline = NO;
-        NSDictionary *saved = YTMULyricsRead(key);
-        if (saved[@"lines"])
-            lyrics = YTMULyricsFromJSON(saved);
-        if (!lyrics) {
-            lyrics = YTMUEmbeddedLyrics(url);
-            if (lyrics && key)
-                YTMULyricsWrite(key, YTMULyricsToJSON(lyrics));
-        }
-        if (!lyrics && key && !YTMULyricsMissingIsFresh(saved))
-            lyrics = YTMUFetchAndSave(key, videoID, title, artist, duration, &offline);
+        YTMULyrics *lyrics = YTMUEnsureLyricsFile(url, videoID, title, artist, duration, &offline);
         dispatch_async(dispatch_get_main_queue(), ^{
             completion(lyrics, offline);
         });
@@ -650,23 +703,14 @@ static NSArray<NSString *> *YTMUGoogleTranslateLines(NSArray<YTMULyricLine *> *l
     return result;
 }
 
+
+#pragma mark - Translation: Google with internet, the offline model without
+
 static NSString *const YTMUCreditOffline = @"Translated offline";
 static NSString *const YTMUCreditGoogle = @"Translated by Google";
 
-static void YTMUSaveTranslation(NSString *key, NSString *target, NSArray<NSString *> *translation, NSString *credit) {
-    NSDictionary *saved = YTMULyricsRead(key);
-    if (!saved[@"lines"])
-        return;
-    NSMutableDictionary *updated = [saved mutableCopy];
-    NSMutableDictionary *all = [([saved[@"translations"] isKindOfClass:[NSDictionary class]] ? saved[@"translations"] : @{}) mutableCopy];
-    all[target] = translation;
-    all[[target stringByAppendingString:@"#credit"]] = credit;
-    updated[@"translations"] = all;
-    YTMULyricsWrite(key, updated);
-}
-
-// Offline translation: FrozenMLTranslate.framework (Google's on-device ML Kit models, iOS 15.5+)
-// in the app's Frameworks folder, added by the GitHub Actions workflow and loaded on first use.
+// FrozenMLTranslate.framework (Google's on-device ML Kit models, iOS 15.5+) in the app's
+// Frameworks folder, added by the GitHub Actions workflow and loaded on first use.
 // nil when it isn't there (jailbreak .deb, local builds) or can't load
 static Class YTMUOfflineTranslator(void) {
     static Class translator;
@@ -680,10 +724,8 @@ static Class YTMUOfflineTranslator(void) {
             return;
         }
         Class candidate = NSClassFromString(@"FMMLTranslator");
-        SEL supported = NSSelectorFromString(@"isSupported");
-        if (candidate && [candidate respondsToSelector:supported] &&
-            [candidate respondsToSelector:NSSelectorFromString(@"translateTexts:source:target:completion:")] &&
-            ((BOOL (*)(id, SEL))objc_msgSend)(candidate, supported))
+        if (candidate && [candidate respondsToSelector:NSSelectorFromString(@"translateTexts:source:target:completion:")] &&
+            [candidate respondsToSelector:NSSelectorFromString(@"prepareSource:target:")])
             translator = candidate;
     });
     return translator;
@@ -698,7 +740,22 @@ static NSString *YTMUBaseLanguage(NSString *code) {
     return [code componentsSeparatedByString:@"-"].firstObject.lowercaseString;
 }
 
-// Offline model translation of the real lines (♪ / blank stay empty), completion on the main queue
+// Downloads the offline model for these lyrics' language (once, in the background) so
+// translating works later without internet. Nothing is translated here.
+static void YTMUPrepareOfflineTranslation(YTMULyrics *lyrics) {
+    NSString *source = YTMUBaseLanguage([lyrics languageCode]);
+    NSString *target = YTMUBaseLanguage([YTMULyrics deviceLanguageCode]);
+    if (source.length < 2 || target.length < 2 || [source isEqualToString:target])
+        return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        Class translator = YTMUOfflineTranslator();
+        if (translator)
+            ((void (*)(id, SEL, NSString *, NSString *))objc_msgSend)(translator, NSSelectorFromString(@"prepareSource:target:"), source, target);
+    });
+}
+
+// Offline model, only with its language downloaded (never waits for the internet).
+// Completion on the main queue, always within 20 seconds
 static void YTMUTranslateOffline(NSArray<YTMULyricLine *> *lines, NSString *source, NSString *target, void (^completion)(NSArray<NSString *> *result, NSString *error)) {
     Class translator = YTMUOfflineTranslator();
     NSMutableArray<NSNumber *> *indexes = [NSMutableArray array];
@@ -710,90 +767,56 @@ static void YTMUTranslateOffline(NSArray<YTMULyricLine *> *lines, NSString *sour
             [texts addObject:text];
         }
     }
-    if (!translator || !texts.count || !source.length) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            completion(nil, !source.length ? @"The language of these lyrics isn't clear" : @"Nothing to translate");
-        });
+    if (!translator || !texts.count || source.length < 2) {
+        completion(nil, !translator ? @"No internet connection" : @"Translation isn't available for these lyrics");
         return;
     }
-    void (^done)(NSArray<NSString *> *, NSString *) = ^(NSArray<NSString *> *translated, NSString *error) {
-        if (translated.count != texts.count) {
-            completion(nil, error.length ? error : @"Translation isn't available right now");
+    __block BOOL finished = NO;
+    void (^finish)(NSArray<NSString *> *, NSString *) = ^(NSArray<NSString *> *result, NSString *error) {
+        if (finished)
             return;
-        }
-        NSMutableArray<NSString *> *result = [NSMutableArray array];
-        for (NSUInteger i = 0; i < lines.count; i++)
-            [result addObject:@""];
-        for (NSUInteger i = 0; i < indexes.count; i++)
-            result[indexes[i].unsignedIntegerValue] = translated[i];
-        completion(result, nil);
+        finished = YES;
+        completion(result, error);
     };
-    // ML Kit calls are made from the main queue
-    dispatch_async(dispatch_get_main_queue(), ^{
-        ((void (*)(id, SEL, NSArray *, NSString *, NSString *, void (^)(NSArray<NSString *> *, NSString *)))objc_msgSend)(
-            translator, NSSelectorFromString(@"translateTexts:source:target:completion:"), texts, YTMUBaseLanguage(source), YTMUBaseLanguage(target), done);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        finish(nil, @"Offline translation didn't respond");
     });
-}
-
-// Downloads: lyrics in another language get translated right away (model downloaded once),
-// so Translate works offline instantly later
-static void YTMUPretranslate(NSString *key, YTMULyrics *lyrics) {
-    if (!key || !lyrics.lines.count || !YTMUOfflineTranslator())
-        return;
-    NSString *source = [lyrics languageCode];
-    NSString *target = [YTMULyrics deviceLanguageCode];
-    if (source.length < 2 || [YTMUBaseLanguage(source) isEqualToString:YTMUBaseLanguage(target)])
-        return;
-    NSDictionary *translations = YTMULyricsRead(key)[@"translations"];
-    if ([translations isKindOfClass:[NSDictionary class]] && [translations[target] isKindOfClass:[NSArray class]])
-        return;
-    NSArray<YTMULyricLine *> *lines = lyrics.lines;
-    YTMUTranslateOffline(lines, source, target, ^(NSArray<NSString *> *result, NSString *error) {
-        if (!result)
-            return;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            YTMUSaveTranslation(key, target, result, YTMUCreditOffline);
+    void (^done)(NSArray<NSString *> *, NSString *) = ^(NSArray<NSString *> *translated, NSString *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (translated.count != texts.count) {
+                finish(nil, error.length ? error : @"Translation isn't available right now");
+                return;
+            }
+            NSMutableArray<NSString *> *result = [NSMutableArray array];
+            for (NSUInteger i = 0; i < lines.count; i++)
+                [result addObject:@""];
+            for (NSUInteger i = 0; i < indexes.count; i++)
+                result[indexes[i].unsignedIntegerValue] = translated[i];
+            finish(result, nil);
         });
-    });
+    };
+    ((void (*)(id, SEL, NSArray *, NSString *, NSString *, void (^)(NSArray<NSString *> *, NSString *)))objc_msgSend)(
+        translator, NSSelectorFromString(@"translateTexts:source:target:completion:"), texts, YTMUBaseLanguage(source), YTMUBaseLanguage(target), done);
 }
 
 - (void)translationForTrack:(YTMUOfflineTrack *)track presenter:(UIViewController *)presenter completion:(void (^)(NSArray<NSString *> *, NSString *, NSString *))completion {
-    NSString *key = [YTMULyrics keyForTrack:track];
     NSString *target = [YTMULyrics deviceLanguageCode];
     NSString *source = [self languageCode];
     NSArray<YTMULyricLine *> *lines = self.lines;
+    YTMULyrics *lyrics = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSDictionary *saved = YTMULyricsRead(key);
-        NSDictionary *translations = [saved[@"translations"] isKindOfClass:[NSDictionary class]] ? saved[@"translations"] : @{};
-        NSArray *cached = translations[target];
-        NSString *cachedCredit = [translations[[target stringByAppendingString:@"#credit"]] isKindOfClass:[NSString class]] ? translations[[target stringByAppendingString:@"#credit"]] : YTMUCreditGoogle;
+        // With internet: Google
+        NSArray<NSString *> *online = YTMUGoogleTranslateLines(lines, target);
         dispatch_async(dispatch_get_main_queue(), ^{
-            if ([cached isKindOfClass:[NSArray class]] && cached.count == lines.count) {
-                completion(cached, cachedCredit, nil);
+            if (online) {
+                completion(online, YTMUCreditGoogle, nil);
+                // Offline model for next time
+                YTMUPrepareOfflineTranslation(lyrics);
                 return;
             }
-
-            if (YTMUOfflineTranslator()) {
-                // Offline model (downloaded once per language)
-                YTMUTranslateOffline(lines, source, target, ^(NSArray<NSString *> *result, NSString *error) {
-                    if (result) {
-                        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-                            YTMUSaveTranslation(key, target, result, YTMUCreditOffline);
-                        });
-                    }
-                    completion(result, result ? YTMUCreditOffline : nil, error);
-                });
-                return;
-            }
-
-            // No offline translator in this build: Google (needs internet)
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                NSArray<NSString *> *result = YTMUGoogleTranslateLines(lines, target);
-                if (result)
-                    YTMUSaveTranslation(key, target, result, YTMUCreditGoogle);
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    completion(result, YTMUCreditGoogle, result ? nil : @"Translation isn't available right now");
-                });
+            // No internet (or Google unreachable): the offline model
+            YTMUTranslateOffline(lines, source, target, ^(NSArray<NSString *> *result, NSString *error) {
+                completion(result, result ? YTMUCreditOffline : nil, error);
             });
         });
     });

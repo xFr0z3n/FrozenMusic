@@ -572,7 +572,7 @@ NSString *YTMUTrackOrderKey(NSURL *folder) {
             }
             // Songs downloaded before lyrics existed get theirs in the background (saved ones are skipped)
             if (track.videoID.length)
-                YTMUPrefetchLyrics(track.videoID, track.title, track.artist, track.duration);
+                YTMUPrefetchLyricsForSong(file, track.videoID, track.title, track.artist, track.duration);
         }
         [tracks addObject:track];
     }
@@ -2606,6 +2606,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
         if ([player.currentTrack.url isEqual:track.url])
             [player stop];
         [[NSFileManager defaultManager] removeItemAtURL:track.url error:nil];
+        YTMUDeleteLyrics(track.url);
         NSMutableArray *tracks = [self.tracks mutableCopy];
         [tracks removeObject:track];
         self.tracks = tracks;

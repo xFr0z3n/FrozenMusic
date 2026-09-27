@@ -1,5 +1,6 @@
 #import "FFMpegDownloader.h"
 #import "MP3Encoder.h"
+#import "Offline/YTMULyrics.h"
 
 // iTunes-style JPEG data type (value of kCMMetadataBaseDataType_JPEG),
 // written as a literal so CoreMedia doesn't have to be linked
@@ -43,7 +44,7 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
 
     // Argument array instead of one string, so titles with spaces/quotes are safe
     NSMutableArray<NSString *> *arguments = [@[@"-y", @"-i", audioURL, @"-map", @"0:a:0", @"-c", @"copy"] mutableCopy];
-    for (NSString *key in @[@"title", @"artist", @"album", @"album_artist", @"track", @"date", @"comment", @"lyrics"]) {
+    for (NSString *key in @[@"title", @"artist", @"album", @"album_artist", @"track", @"date", @"comment"]) {
         NSString *value = metadata[key];
         if ([value isKindOfClass:[NSString class]] && value.length > 0) {
             [arguments addObject:@"-metadata"];
@@ -66,8 +67,19 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
                     [fm removeItemAtURL:rawURL error:nil];
                     [fm removeItemAtURL:taggedURL error:nil];
                     if (saved) {
-                        [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadDataNotification" object:nil];
-                        [self showResultWithText:LOC(@"DONE") icon:@"checkmark" delay:3.0];
+                        // Lyrics into YTMusicUltimate/Lyrics, before "Done" (then they work offline right away)
+                        self.hud.mode = MBProgressHUDModeIndeterminate;
+                        self.hud.detailsLabel.text = @"Lyrics…";
+                        NSString *videoID = self.videoID, *title = metadata[@"title"], *artist = metadata[@"artist"];
+                        NSTimeInterval duration = self.duration;
+                        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                            if (videoID.length || title.length)
+                                YTMUSaveLyricsForDownload(outputURL, videoID, title, artist, duration);
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadDataNotification" object:nil];
+                                [self showResultWithText:LOC(@"DONE") icon:@"checkmark" delay:3.0];
+                            });
+                        });
                     } else {
                         [self showResultWithText:LOC(@"OOPS") icon:@"xmark" delay:3.0];
                     }

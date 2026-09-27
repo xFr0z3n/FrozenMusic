@@ -67,18 +67,6 @@ static NSData *YTMUID3Tag(NSDictionary<NSString *, NSString *> *metadata, NSData
         [frames appendData:YTMUID3Frame(@"COMM", payload)];
     }
 
-    // USLT: lyrics (LRC text when synced), encoding, language, empty description, text
-    NSString *lyrics = metadata[@"lyrics"];
-    if ([lyrics isKindOfClass:[NSString class]] && lyrics.length) {
-        NSMutableData *payload = [NSMutableData data];
-        uint8_t encoding = 1;
-        [payload appendBytes:&encoding length:1];
-        [payload appendBytes:"eng" length:3];
-        YTMUAppendUTF16(payload, @"", YES);
-        YTMUAppendUTF16(payload, lyrics, NO);
-        [frames appendData:YTMUID3Frame(@"USLT", payload)];
-    }
-
     // APIC: front cover
     if (coverJPEG.length) {
         NSMutableData *payload = [NSMutableData data];
