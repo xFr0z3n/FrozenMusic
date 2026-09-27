@@ -120,6 +120,18 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/main/Source/Utils/lib" "$GITHUB_WORKSPACE/main/Source/Utils/lame"
           cp "$RUNNER_TEMP/lame-out/lib/libmp3lame.a" "$GITHUB_WORKSPACE/main/Source/Utils/lib/"
           cp "$RUNNER_TEMP/lame-out/include/lame/lame.h" "$GITHUB_WORKSPACE/main/Source/Utils/lame/"
+      - name: Build on-device translation helper
+        run: |
+          # Apple's Translation framework (iOS 18) needs Xcode's SDK, so it's its own dylib.
+          # It goes into the app's Frameworks folder without a load command: the tweak dlopens
+          # it only on iOS 18+ (older iOS never touches it and uses online translation).
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun --sdk iphoneos swiftc -emit-library -parse-as-library -swift-version 5 -O \
+            -module-name FrozenTranslate -target arm64-apple-ios18.0 -sdk "$SDK" \
+            -Xlinker -install_name -Xlinker @rpath/FrozenTranslate.dylib \
+            main/Translate/FrozenTranslate.swift -o FrozenTranslate.dylib
+          ldid -S FrozenTranslate.dylib
+          otool -L FrozenTranslate.dylib
       - name: Build Tweak for Sideloading
         run: |
           cd main
@@ -127,6 +139,17 @@ jobs:
           mv packages/*.deb ../ytmult.deb
       - name: Inject tweak into provided IPA
         run: cyan -i ytm.ipa -o YTMusicUltimate.ipa -uwsf ytmult.deb -n "${{ inputs.display_name }}" -b ${{ inputs.bundle_id }} 
+      - name: Add on-device translation helper to the IPA
+        run: |
+          rm -rf ipa_work && mkdir ipa_work && cd ipa_work
+          unzip -q ../YTMusicUltimate.ipa
+          APP="$(ls -d Payload/*.app | head -n 1)"
+          mkdir -p "$APP/Frameworks"
+          cp ../FrozenTranslate.dylib "$APP/Frameworks/"
+          rm -f ../YTMusicUltimate.ipa
+          zip -qry ../YTMusicUltimate.ipa .
+          cd .. && rm -rf ipa_work
+          unzip -l YTMusicUltimate.ipa | grep FrozenTranslate.dylib
       - name: Create Release
         uses: softprops/action-gh-release@v2.5.0
         with:

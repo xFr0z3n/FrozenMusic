@@ -2,13 +2,15 @@
 #import "YTMUOfflinePlayer.h"
 #import <CommonCrypto/CommonCrypto.h>
 #import <NaturalLanguage/NaturalLanguage.h>
+#import <objc/message.h>
+#import <dlfcn.h>
 
 @implementation YTMULyricLine
 @end
 
 #pragma mark - Storage (Application Support/FrozenMusic/Lyrics/<video ID>.json)
 
-static const NSTimeInterval YTMULyricsMissingRetry = 3 * 24 * 60 * 60; // "none" is asked again after 3 days
+static const NSTimeInterval YTMULyricsMissingRetry = 24 * 60 * 60; // "none" is asked again after a day
 
 static NSURL *YTMULyricsFolder(void) {
     static NSURL *folder;
@@ -125,7 +127,9 @@ static BOOL YTMUIsOfflineError(NSError *error) {
     }
 }
 
-// Blocking request. *status: HTTP status, 0 when the request itself failed
+// Blocking request. *status: HTTP status, 0 when the request itself failed.
+// *offline: the answer can't be trusted (no internet, timeout, rate limit, server error),
+// so "no lyrics" must not be remembered
 static NSData *YTMULyricsLoad(NSURLRequest *request, NSInteger *status, BOOL *offline) {
     __block NSData *result = nil;
     __block NSInteger code = 0;
@@ -140,12 +144,13 @@ static NSData *YTMULyricsLoad(NSURLRequest *request, NSInteger *status, BOOL *of
             result = data;
         dispatch_semaphore_signal(done);
     }] resume];
-    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25 * NSEC_PER_SEC)));
+    BOOL finished = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25 * NSEC_PER_SEC))) == 0;
     if (status)
         *status = code;
-    if (offline && noNetwork)
+    BOOL unreliable = !finished || noNetwork || (!result && (code == 0 || code == 429 || code >= 500));
+    if (offline && unreliable)
         *offline = YES;
-    return result;
+    return finished ? result : nil;
 }
 
 static id YTMUInnerTube(NSString *endpoint, NSDictionary *body, NSString *client, NSString *version, BOOL *offline) {
@@ -388,7 +393,7 @@ static YTMULyrics *YTMUFetchLyrics(NSString *videoID, NSString *title, NSString 
     if (!lyrics && title.length)
         lyrics = YTMUFetchLRCLIB(title, artist, duration, &lrclibOffline);
     if (offline)
-        *offline = !lyrics && (videoID.length ? ytmOffline : YES) && (title.length ? lrclibOffline : YES);
+        *offline = !lyrics && ((videoID.length && ytmOffline) || (title.length && lrclibOffline));
     return lyrics;
 }
 
@@ -419,6 +424,8 @@ void YTMUPrefetchLyrics(NSString *videoID, NSString *title, NSString *artist, NS
         if (saved[@"lines"] || YTMULyricsMissingIsFresh(saved))
             return;
         YTMUFetchAndSave(key, videoID, title, artist, duration, NULL);
+        // Gentle on YouTube with big playlists (no rate limiting)
+        [NSThread sleepForTimeInterval:0.3];
     });
 }
 
@@ -502,76 +509,153 @@ static NSArray<NSString *> *YTMUTranslateChunk(NSArray<NSString *> *texts, NSStr
     return result;
 }
 
-- (void)translationForTrack:(YTMUOfflineTrack *)track completion:(void (^)(NSArray<NSString *> *))completion {
+// Google (online): only lines with words, in chunks that keep the URL short. nil on failure
+static NSArray<NSString *> *YTMUGoogleTranslateLines(NSArray<YTMULyricLine *> *lines, NSString *target) {
+    NSMutableArray<NSNumber *> *indexes = [NSMutableArray array];
+    for (NSUInteger i = 0; i < lines.count; i++) {
+        NSString *text = lines[i].text;
+        if (text.length && ![text isEqualToString:@"♪"])
+            [indexes addObject:@(i)];
+    }
+    if (!indexes.count)
+        return nil;
+    NSMutableArray<NSString *> *result = [NSMutableArray array];
+    for (NSUInteger i = 0; i < lines.count; i++)
+        [result addObject:@""];
+    NSUInteger start = 0;
+    while (start < indexes.count) {
+        NSMutableArray<NSString *> *chunk = [NSMutableArray array];
+        NSUInteger size = 0;
+        NSUInteger end = start;
+        while (end < indexes.count) {
+            NSString *text = lines[indexes[end].unsignedIntegerValue].text;
+            NSUInteger encoded = [text stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]].length + 3;
+            if (chunk.count && size + encoded > 1500)
+                break;
+            [chunk addObject:text];
+            size += encoded;
+            end++;
+        }
+        NSArray<NSString *> *translated = YTMUTranslateChunk(chunk, target);
+        if (translated.count != chunk.count) {
+            // Lines got merged: translate them one by one
+            NSMutableArray *single = [NSMutableArray array];
+            for (NSString *text in chunk) {
+                NSArray *one = YTMUTranslateChunk(@[text], target);
+                if (!one.count)
+                    return nil;
+                [single addObject:[one componentsJoinedByString:@" "]];
+            }
+            translated = single;
+        }
+        for (NSUInteger i = 0; i < chunk.count; i++)
+            result[indexes[start + i].unsignedIntegerValue] = translated[i];
+        start = end;
+    }
+    return result;
+}
+
+static NSString *const YTMUCreditOnDevice = @"Translated on device";
+static NSString *const YTMUCreditGoogle = @"Translated by Google";
+
+static void YTMUSaveTranslation(NSString *key, NSString *target, NSArray<NSString *> *translation, NSString *credit) {
+    NSDictionary *saved = YTMULyricsRead(key);
+    if (!saved[@"lines"])
+        return;
+    NSMutableDictionary *updated = [saved mutableCopy];
+    NSMutableDictionary *all = [([saved[@"translations"] isKindOfClass:[NSDictionary class]] ? saved[@"translations"] : @{}) mutableCopy];
+    all[target] = translation;
+    all[[target stringByAppendingString:@"#credit"]] = credit;
+    updated[@"translations"] = all;
+    YTMULyricsWrite(key, updated);
+}
+
+// Apple's on-device translation: FrozenTranslate.dylib in the app's Frameworks folder (added
+// by the GitHub Actions workflow, not linked at launch), loaded only on iOS 18+. nil when not there
+static Class YTMUOnDeviceTranslator(void) {
+    if (@available(iOS 18.0, *)) {
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            NSString *path = [[NSBundle mainBundle].privateFrameworksPath stringByAppendingPathComponent:@"FrozenTranslate.dylib"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:path] && !dlopen(path.fileSystemRepresentation, RTLD_NOW))
+                NSLog(@"[FrozenMusic] on-device translation not loaded: %s", dlerror());
+        });
+    } else {
+        return nil;
+    }
+    Class translator = NSClassFromString(@"FMTranslator");
+    SEL supported = NSSelectorFromString(@"isSupported");
+    if (!translator || ![translator respondsToSelector:supported] ||
+        ![translator respondsToSelector:NSSelectorFromString(@"translateTexts:source:target:parent:completion:")])
+        return nil;
+    return ((BOOL (*)(id, SEL))objc_msgSend)(translator, supported) ? translator : nil;
+}
+
++ (BOOL)canTranslateOnDevice {
+    return YTMUOnDeviceTranslator() != nil;
+}
+
+- (void)translationForTrack:(YTMUOfflineTrack *)track presenter:(UIViewController *)presenter completion:(void (^)(NSArray<NSString *> *, NSString *, NSString *))completion {
     NSString *key = [YTMULyrics keyForTrack:track];
     NSString *target = [YTMULyrics deviceLanguageCode];
+    NSString *source = [self languageCode];
     NSArray<YTMULyricLine *> *lines = self.lines;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSDictionary *saved = YTMULyricsRead(key);
         NSDictionary *translations = [saved[@"translations"] isKindOfClass:[NSDictionary class]] ? saved[@"translations"] : @{};
         NSArray *cached = translations[target];
-        if ([cached isKindOfClass:[NSArray class]] && cached.count == lines.count) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(cached); });
-            return;
-        }
-
-        // Only real lines, in chunks that keep the URL short
-        NSMutableArray<NSNumber *> *indexes = [NSMutableArray array];
-        for (NSUInteger i = 0; i < lines.count; i++) {
-            NSString *text = lines[i].text;
-            if (text.length && ![text isEqualToString:@"♪"])
-                [indexes addObject:@(i)];
-        }
-        NSMutableArray<NSString *> *result = [NSMutableArray array];
-        for (NSUInteger i = 0; i < lines.count; i++)
-            [result addObject:@""];
-        BOOL failed = indexes.count == 0;
-        NSUInteger start = 0;
-        while (!failed && start < indexes.count) {
-            NSMutableArray<NSString *> *chunk = [NSMutableArray array];
-            NSUInteger size = 0;
-            NSUInteger end = start;
-            while (end < indexes.count) {
-                NSString *text = lines[indexes[end].unsignedIntegerValue].text;
-                NSUInteger encoded = [text stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]].length + 3;
-                if (chunk.count && size + encoded > 1500)
-                    break;
-                [chunk addObject:text];
-                size += encoded;
-                end++;
-            }
-            NSArray<NSString *> *translated = YTMUTranslateChunk(chunk, target);
-            if (translated.count != chunk.count) {
-                // Lines got merged: translate them one by one
-                NSMutableArray *single = [NSMutableArray array];
-                for (NSString *text in chunk) {
-                    NSArray *one = YTMUTranslateChunk(@[text], target);
-                    if (!one.count) {
-                        single = nil;
-                        break;
-                    }
-                    [single addObject:[one componentsJoinedByString:@" "]];
-                }
-                translated = single;
-            }
-            if (!translated) {
-                failed = YES;
-                break;
-            }
-            for (NSUInteger i = 0; i < chunk.count; i++)
-                result[indexes[start + i].unsignedIntegerValue] = translated[i];
-            start = end;
-        }
-
-        if (!failed && saved[@"lines"]) {
-            NSMutableDictionary *updated = [saved mutableCopy];
-            NSMutableDictionary *allTranslations = [translations mutableCopy];
-            allTranslations[target] = result;
-            updated[@"translations"] = allTranslations;
-            YTMULyricsWrite(key, updated);
-        }
+        NSString *cachedCredit = [translations[[target stringByAppendingString:@"#credit"]] isKindOfClass:[NSString class]] ? translations[[target stringByAppendingString:@"#credit"]] : YTMUCreditGoogle;
         dispatch_async(dispatch_get_main_queue(), ^{
-            completion(failed ? nil : result);
+            if ([cached isKindOfClass:[NSArray class]] && cached.count == lines.count) {
+                completion(cached, cachedCredit, nil);
+                return;
+            }
+
+            Class translator = YTMUOnDeviceTranslator();
+            if (translator && presenter.view.window) {
+                // On device: iOS asks once to download the languages, then it works offline
+                NSMutableArray<NSNumber *> *indexes = [NSMutableArray array];
+                NSMutableArray<NSString *> *texts = [NSMutableArray array];
+                for (NSUInteger i = 0; i < lines.count; i++) {
+                    NSString *text = lines[i].text;
+                    if (text.length && ![text isEqualToString:@"♪"]) {
+                        [indexes addObject:@(i)];
+                        [texts addObject:text];
+                    }
+                }
+                if (!texts.count) {
+                    completion(nil, nil, @"Nothing to translate");
+                    return;
+                }
+                void (^done)(NSArray<NSString *> *, NSString *) = ^(NSArray<NSString *> *translated, NSString *error) {
+                    if (translated.count != texts.count) {
+                        completion(nil, nil, error.length ? error : @"Translation isn't available right now");
+                        return;
+                    }
+                    NSMutableArray<NSString *> *result = [NSMutableArray array];
+                    for (NSUInteger i = 0; i < lines.count; i++)
+                        [result addObject:@""];
+                    for (NSUInteger i = 0; i < indexes.count; i++)
+                        result[indexes[i].unsignedIntegerValue] = translated[i];
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        YTMUSaveTranslation(key, target, result, YTMUCreditOnDevice);
+                    });
+                    completion(result, YTMUCreditOnDevice, nil);
+                };
+                ((void (*)(id, SEL, NSArray *, NSString *, NSString *, UIViewController *, void (^)(NSArray<NSString *> *, NSString *)))objc_msgSend)(
+                    translator, NSSelectorFromString(@"translateTexts:source:target:parent:completion:"), texts, source, target, presenter, done);
+                return;
+            }
+
+            // Older iOS: Google (needs internet)
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                NSArray<NSString *> *result = YTMUGoogleTranslateLines(lines, target);
+                if (result)
+                    YTMUSaveTranslation(key, target, result, YTMUCreditGoogle);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(result, YTMUCreditGoogle, result ? nil : @"Translation isn't available right now");
+                });
+            });
         });
     });
 }

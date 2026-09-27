@@ -1006,6 +1006,11 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     [self.hud hideAnimated:YES];
     self.hud = nil;
 
+    // Lyrics of every song in the list, right away (also when all songs are already downloaded;
+    // saved ones are skipped), for the offline player
+    for (YTMUPlaylistTrack *track in tracks)
+        YTMUPrefetchLyrics(track.videoID, track.title, track.artist, 0);
+
     NSURL *folder = [self folderForTitle:title];
     NSDictionary *index = [self loadIndexInFolder:folder];
     NSUInteger existingM4A = 0, existingMP3 = 0, unavailable = 0;
@@ -1075,8 +1080,6 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     NSMutableSet<NSString *> *norms = [NSMutableSet set];
     NSMutableArray<YTMUPlaylistTrack *> *existing = [NSMutableArray array];
     for (YTMUPlaylistTrack *track in tracks) {
-        // Lyrics for every song of the list (already saved ones are skipped), for the offline player
-        YTMUPrefetchLyrics(track.videoID, track.title, track.artist, 0);
         [allIDs addObject:track.videoID];
         NSString *titleKey = YTMUTitleKey(track.title);
         NSString *normKey = YTMUNormTitle(track.title);

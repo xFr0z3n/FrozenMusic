@@ -21,12 +21,12 @@
 - **Full playlists and albums** in one tap: one folder per playlist, track numbers follow the playlist order, songs that are already downloaded are skipped, and the numbering is updated when the playlist order changes
 - **Single songs** as `.m4a` (original quality, no re-encoding) or `.mp3` (LAME)
 - **Complete tags**: title, artist, album, album artist, track number, embedded cover art, plus `cover.png`, creator and description for every playlist
-- **Lyrics** are saved with every song for offline use: YouTube Music's own synced lyrics, with [LRCLIB](https://lrclib.net) as fallback
+- **Lyrics** are saved with every song, playlist and album download for offline use (re-downloading a playlist also fetches lyrics for songs you already have, and older downloads get theirs in the background): YouTube Music's own synced lyrics, with [LRCLIB](https://lrclib.net) as fallback
 
 ### Offline player
 - Mini player and full player with the cover's color hue
 - Queue with reordering, Play next, Add to queue, shuffle and repeat
-- YouTube Music's lyrics screen, offline: synced lyrics that follow the song (tap a line to jump there), **Share** selected lines and **Translate** lyrics in other languages
+- YouTube Music's lyrics screen, offline: synced lyrics on the blurred cover that follow the song (tap a line to jump there), **Share** selected lines and **Translate** lyrics in other languages, on device with Apple's translation models (iOS 18+, works offline once iOS has downloaded the languages; older iOS uses Google online)
 - Lock screen and Control Center controls that never interfere with YouTube Music's own player
 
 ### Downloads tab
