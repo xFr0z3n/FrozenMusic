@@ -1712,6 +1712,8 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
     self.artistLabel.text = track.artist;
     self.upNextLabel.text = track.title;
     [self reloadQueue];
+    // Lyrics background ready before the lyrics are opened
+    YTMUPrepareLyricsBackdrop(track.artwork);
     BOOL showHue = !YTMUIsOLED() || YTMUPrefEnabled(@"frozenOledPlayerHue");
     if (showHue && track.artwork != self.hueArtwork) {
         self.hueArtwork = track.artwork;

@@ -7,3 +7,6 @@
 @interface YTMULyricsViewController : UIViewController
 - (instancetype)initWithTrack:(YTMUOfflineTrack *)track lyrics:(YTMULyrics *)lyrics;
 @end
+
+// Blurred-cover background made ahead of time (the full player calls this for its song)
+FOUNDATION_EXPORT void YTMUPrepareLyricsBackdrop(UIImage *cover);

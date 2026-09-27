@@ -74,7 +74,7 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
                         NSTimeInterval duration = self.duration;
                         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                             if (videoID.length || title.length)
-                                YTMUSaveLyricsForDownload(outputURL, videoID, title, artist, duration);
+                                YTMUSaveLyricsForDownload(outputURL, videoID, title, artist, duration, YES);
                             dispatch_async(dispatch_get_main_queue(), ^{
                                 [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadDataNotification" object:nil];
                                 [self showResultWithText:LOC(@"DONE") icon:@"checkmark" delay:3.0];
