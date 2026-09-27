@@ -37,17 +37,93 @@
     }
 }
 
-+ (void)prepareSource:(NSString *)source target:(NSString *)target {
-    if (![self isSupportedLanguage:source] || ![self isSupportedLanguage:target] || [source isEqualToString:target])
++ (NSArray<NSString *> *)allLanguages {
+    return [MLKTranslateAllLanguages().allObjects sortedArrayUsingSelector:@selector(compare:)];
+}
+
++ (NSMutableSet<NSString *> *)downloading {
+    static NSMutableSet<NSString *> *set;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        set = [NSMutableSet set];
+    });
+    return set;
+}
+
++ (BOOL)isDownloading:(NSString *)language {
+    return [[self downloading] containsObject:language ?: @""];
+}
+
++ (void)downloadLanguage:(NSString *)language
+                progress:(void (^)(double))progress
+              completion:(void (^)(NSString *))completion {
+    void (^finish)(NSString *) = ^(NSString *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[self downloading] removeObject:language ?: @""];
+            completion(error);
+        });
+    };
+    if (![self isSupportedLanguage:language]) {
+        finish(@"This language can't be translated offline");
         return;
-    if ([self isModelReady:source] && [self isModelReady:target])
+    }
+    if ([self isModelReady:language]) {
+        finish(nil);
         return;
-    MLKTranslator *translator = [self translatorFrom:source to:target];
+    }
+    [[self downloading] addObject:language];
+    MLKTranslateRemoteModel *model = [MLKTranslateRemoteModel translateRemoteModelWithLanguage:(MLKTranslateLanguage)language];
     MLKModelDownloadConditions *conditions = [[MLKModelDownloadConditions alloc] initWithAllowsCellularAccess:YES
                                                                                   allowsBackgroundDownloading:YES];
-    [translator downloadModelIfNeededWithConditions:conditions completion:^(NSError *error) {
-        if (error)
-            NSLog(@"[FrozenMusic] offline translation model not downloaded: %@", error.localizedDescription);
+    NSProgress *download = [[MLKModelManager modelManager] downloadModel:model conditions:conditions];
+
+    // Progress while it downloads, done / failed from ML Kit's notifications
+    __block NSTimer *timer = nil;
+    __block id succeeded = nil, failed = nil;
+    void (^cleanup)(void) = ^{
+        [timer invalidate];
+        timer = nil;
+        if (succeeded)
+            [[NSNotificationCenter defaultCenter] removeObserver:succeeded];
+        if (failed)
+            [[NSNotificationCenter defaultCenter] removeObserver:failed];
+        succeeded = failed = nil;
+    };
+    // Called from the main queue (settings screen)
+    timer = [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) {
+        if (progress)
+            progress(download.fractionCompleted);
+    }];
+    succeeded = [[NSNotificationCenter defaultCenter] addObserverForName:MLKModelDownloadDidSucceedNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+        MLKRemoteModel *done = note.userInfo[MLKModelDownloadUserInfoKeyRemoteModel];
+        if (![done isEqual:model] && ![done.name isEqualToString:model.name])
+            return;
+        cleanup();
+        finish(nil);
+    }];
+    failed = [[NSNotificationCenter defaultCenter] addObserverForName:MLKModelDownloadDidFailNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+        MLKRemoteModel *done = note.userInfo[MLKModelDownloadUserInfoKeyRemoteModel];
+        if (![done isEqual:model] && ![done.name isEqualToString:model.name])
+            return;
+        NSError *error = note.userInfo[MLKModelDownloadUserInfoKeyError];
+        cleanup();
+        finish(error.localizedDescription.length ? error.localizedDescription : @"Download failed");
+    }];
+}
+
++ (void)deleteLanguage:(NSString *)language completion:(void (^)(NSString *))completion {
+    void (^finish)(NSString *) = ^(NSString *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(error);
+        });
+    };
+    if (![self isSupportedLanguage:language] || [language isEqualToString:MLKTranslateLanguageEnglish]) {
+        finish(nil);
+        return;
+    }
+    MLKTranslateRemoteModel *model = [MLKTranslateRemoteModel translateRemoteModelWithLanguage:(MLKTranslateLanguage)language];
+    [[MLKModelManager modelManager] deleteDownloadedModel:model completion:^(NSError *error) {
+        finish(error.localizedDescription);
     }];
 }
 
@@ -73,7 +149,7 @@
         return;
     }
     if (![self isModelReady:source] || ![self isModelReady:target]) {
-        finish(nil, @"No internet, and this language isn't downloaded for offline translation yet. Translate it once with internet.");
+        finish(nil, @"No internet, and this language isn't downloaded for offline translation. Download it in FrozenMusic > Offline translation.");
         return;
     }
 
