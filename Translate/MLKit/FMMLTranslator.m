@@ -1,4 +1,5 @@
 #import "FMMLTranslator.h"
+#import <MLKitCommon/MLKitCommon.h>
 #import <MLKitTranslate/MLKitTranslate.h>
 
 @implementation FMMLTranslator
