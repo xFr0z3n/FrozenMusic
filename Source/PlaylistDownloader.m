@@ -1526,7 +1526,7 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
         if (self.failures.count)
             details = [details stringByAppendingFormat:@" · %lu failed", (unsigned long)self.failures.count];
         if (!self.capturing && self.queuedCount > 0)
-            details = [details stringByAppendingString:@"\nFinishing downloads…"];
+            details = [details stringByAppendingFormat:@"\nSaving the last %lu %@…", (unsigned long)self.queuedCount, self.queuedCount == 1 ? @"song" : @"songs"];
     }
 
     [self showStatus:[self statusTitleWith:nil] step:@"Downloading" details:details progress:total ? (float)finished / (float)total : 0];
@@ -2003,7 +2003,7 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *title = self.collectionTitle;
 
-    NSString *audioURL = YTMUAudioURLFromManifest(YTMUGet(hls));
+    NSString *audioURL = YTMUAudioURLFromManifest(YTMUGet(hls)) ?: YTMUAudioURLFromManifest(YTMUGet(hls));
     if (!audioURL) {
         [self addFailure:[NSString stringWithFormat:@"%ld. %@ (no audio in stream)", (long)track.position, track.title]];
         return;
@@ -2049,11 +2049,29 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
     }
     [arguments addObject:tempPath];
 
-    int returnCode = [MobileFFmpeg executeWithArguments:arguments];
-    if (returnCode != RETURN_CODE_SUCCESS) {
+    // One ffmpeg download at a time (cover, conversion, lyrics of the others run alongside);
+    // a failed or empty download is tried once more
+    static dispatch_semaphore_t ffmpegSlot;
+    static dispatch_once_t ffmpegOnce;
+    dispatch_once(&ffmpegOnce, ^{
+        ffmpegSlot = dispatch_semaphore_create(1);
+    });
+    int returnCode = RETURN_CODE_SUCCESS;
+    for (NSInteger attempt = 0; attempt < 2 && !self.cancelled; attempt++) {
+        dispatch_semaphore_wait(ffmpegSlot, DISPATCH_TIME_FOREVER);
+        returnCode = self.cancelled ? RETURN_CODE_CANCEL : [MobileFFmpeg executeWithArguments:arguments];
+        dispatch_semaphore_signal(ffmpegSlot);
+        NSDictionary *attributes = [fm attributesOfItemAtPath:tempPath error:nil];
+        if (returnCode == RETURN_CODE_SUCCESS && attributes.fileSize > 16 * 1024)
+            break;
+        if (returnCode == RETURN_CODE_SUCCESS)
+            returnCode = 1; // no audio came through
+        [fm removeItemAtPath:tempPath error:nil];
+    }
+    if (self.cancelled || returnCode != RETURN_CODE_SUCCESS) {
         [fm removeItemAtPath:tempPath error:nil];
         if (returnCode != RETURN_CODE_CANCEL && !self.cancelled)
-            [self addFailure:[NSString stringWithFormat:@"%ld. %@ (ffmpeg error %d)", (long)track.position, track.title, returnCode]];
+            [self addFailure:[NSString stringWithFormat:@"%ld. %@ (download failed, ffmpeg %d)", (long)track.position, track.title, returnCode]];
         return;
     }
 

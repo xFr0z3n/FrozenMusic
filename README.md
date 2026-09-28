@@ -21,7 +21,7 @@
 ### Downloads
 - Playlists and albums in a single step, saved to one folder each with track numbers matching the playlist order
 - Updating a playlist or album keeps the folder identical to the current list: new songs are downloaded, moved songs are renumbered, removed songs are deleted, and all lyrics are checked again. Songs that are no longer playable are skipped
-- Up to three songs download in parallel, with lyrics fetched alongside
+- Songs are saved while the player moves on to the next one; cover art, MP3 conversion and lyrics are processed alongside, and every song is saved before the lyrics step begins
 - Progress is shown step by step (checking songs, downloading, lyrics, cover and info). The download and lyrics steps can be skipped, and a download can be stopped at any time
 - Single songs as `.m4a` (original stream, no re-encoding) or `.mp3` (LAME, ~190 kbps)
 - Full metadata: title, artist, album, album artist, track number and embedded cover art, plus `cover.png`, creator and description for each playlist or album
