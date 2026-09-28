@@ -3,6 +3,7 @@
 #import "MP3Encoder.h"
 #import "Offline/YTMULyrics.h"
 #import "Offline/YTMUOfflinePlayer.h"
+#import "Offline/YTMUDownloadPanel.h"
 #import "Headers/YTPlayerViewController.h"
 #import <sys/utsname.h>
 #import <objc/message.h>
@@ -355,7 +356,11 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 @interface YTMUPlaylistDownloader ()
 @property (nonatomic, readwrite) BOOL running;
 @property (atomic) BOOL cancelled;
-@property (nonatomic, strong) MBProgressHUD *hud;
+@property (nonatomic, weak) YTMUDownloadPanel *hud; // the downloader's box on screen
+@property (nonatomic, copy) NSArray<NSString *> *steps; // what this run does, in order
+@property (nonatomic) BOOL askingStop;                  // stop question is on screen
+@property (nonatomic, copy) NSString *statusTitle, *statusStep, *statusDetails;
+@property (nonatomic) float statusProgress;
 @property (nonatomic, strong) dispatch_queue_t workQueue;
 @property (nonatomic) UIBackgroundTaskIdentifier backgroundTask;
 @property (nonatomic, copy) NSString *deviceModel;
@@ -429,67 +434,91 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 }
 
 - (void)showMessage:(NSString *)title details:(NSString *)details icon:(NSString *)iconName {
-    [self.hud hideAnimated:NO];
-    UIWindow *window = [UIApplication sharedApplication].keyWindow;
-    if (!window)
-        return;
-
-    MBProgressHUD *hud = [MBProgressHUD showHUDAddedTo:window animated:YES];
-    hud.mode = iconName ? MBProgressHUDModeCustomView : MBProgressHUDModeText;
-    if (iconName) {
-        UIImageView *icon = [[UIImageView alloc] initWithImage:[[UIImage systemImageNamed:iconName] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]];
-        icon.tintColor = [[UIColor labelColor] colorWithAlphaComponent:0.7f];
-        icon.contentMode = UIViewContentModeScaleAspectFit;
-        [icon.widthAnchor constraintEqualToConstant:36].active = YES;
-        [icon.heightAnchor constraintEqualToConstant:36].active = YES;
-        hud.customView = icon;
-    }
-    hud.label.text = title;
-    hud.label.numberOfLines = 0;
-    hud.detailsLabel.text = details;
-    [hud hideAnimated:YES afterDelay:4.0];
+    self.askingStop = NO;
+    [YTMUDownloadPanel showMessage:title details:details symbol:iconName];
     self.hud = nil;
 }
 
+// Box in the middle while loading (with Cancel)
 - (void)showProgress:(NSString *)title details:(NSString *)details progress:(float)progress {
-    if (!self.hud) {
-        UIWindow *window = [UIApplication sharedApplication].keyWindow;
-        if (!window)
-            return;
-        self.hud = [MBProgressHUD showHUDAddedTo:window animated:YES];
-        [self.hud.button setTitle:LOC(@"CANCEL") forState:UIControlStateNormal];
-        [self.hud.button addTarget:self action:@selector(cancelPressed:) forControlEvents:UIControlEventTouchUpInside];
+    YTMUDownloadPanel *panel = self.hud;
+    if (!panel || panel.atTop || panel != [YTMUDownloadPanel current]) {
+        panel = [YTMUDownloadPanel showCentered];
+        __weak __typeof(self) weakSelf = self;
+        panel.buttons = @[[YTMUPanelButton buttonWithTitle:LOC(@"CANCEL") style:YTMUPanelButtonSecondary handler:^{
+            [weakSelf cancelPressed:nil];
+        }]];
+        self.hud = panel;
     }
-    self.hud.mode = progress < 0 ? MBProgressHUDModeIndeterminate : MBProgressHUDModeAnnularDeterminate;
-    if (progress >= 0)
-        self.hud.progress = progress;
-    self.hud.label.text = title;
-    self.hud.label.numberOfLines = 1;
-    self.hud.detailsLabel.text = details;
+    panel.step = nil;
+    panel.title = title;
+    panel.details = details;
+    panel.progress = progress;
 }
 
-// Small status box at the top that lets taps through (so you can press Play)
-- (void)showStatus:(NSString *)title details:(NSString *)details progress:(float)progress {
-    if (!self.hud || self.hud.userInteractionEnabled) {
-        [self.hud hideAnimated:NO];
-        UIWindow *window = [UIApplication sharedApplication].keyWindow;
-        if (!window)
-            return;
-        self.hud = [MBProgressHUD showHUDAddedTo:window animated:YES];
-        self.hud.userInteractionEnabled = NO;
-        self.hud.offset = CGPointMake(0.f, -MBProgressMaxOffset);
-        self.hud.mode = MBProgressHUDModeAnnularDeterminate;
-        self.hud.label.numberOfLines = 1;
-        self.hud.detailsLabel.numberOfLines = 0;
+// "Step 2 of 4 · Downloading"
+- (NSString *)stepText:(NSString *)name {
+    NSUInteger index = [self.steps indexOfObject:name];
+    if (index == NSNotFound || self.steps.count < 2)
+        return name;
+    return [NSString stringWithFormat:@"Step %lu of %lu · %@", (unsigned long)index + 1, (unsigned long)self.steps.count, name];
+}
+
+// Small box at the top: the page below stays usable (so you can press Play), Stop in the box
+- (void)showStatus:(NSString *)title step:(NSString *)step details:(NSString *)details progress:(float)progress {
+    self.statusTitle = title;
+    self.statusStep = step;
+    self.statusDetails = details;
+    self.statusProgress = progress;
+    if (self.askingStop)
+        return;
+    YTMUDownloadPanel *panel = self.hud;
+    if (!panel || !panel.atTop || panel != [YTMUDownloadPanel current]) {
+        panel = [YTMUDownloadPanel showAtTop];
+        __weak __typeof(self) weakSelf = self;
+        panel.buttons = @[[YTMUPanelButton buttonWithTitle:@"Stop" style:YTMUPanelButtonDestructive handler:^{
+            [weakSelf askToStop];
+        }]];
+        self.hud = panel;
     }
-    self.hud.progress = progress;
-    self.hud.label.text = title;
-    self.hud.detailsLabel.text = details;
+    panel.title = title;
+    panel.step = [self stepText:step];
+    panel.details = details;
+    panel.progress = progress;
+}
+
+- (void)askToStop {
+    // Loading / choosing the format: that box has its own Cancel
+    if (!self.running || self.cancelled || !self.steps)
+        return;
+    self.askingStop = YES;
+    YTMUDownloadPanel *panel = [YTMUDownloadPanel showCentered];
+    panel.title = self.isAlbum ? @"Stop the album download?" : @"Stop the playlist download?";
+    panel.details = @"Everything stops right away. Songs saved so far are kept.";
+    __weak __typeof(self) weakSelf = self;
+    panel.buttons = @[
+        [YTMUPanelButton buttonWithTitle:@"Stop" style:YTMUPanelButtonDestructive handler:^{
+            weakSelf.askingStop = NO;
+            [weakSelf stopByUser];
+        }],
+        [YTMUPanelButton buttonWithTitle:@"Keep going" style:YTMUPanelButtonSecondary handler:^{
+            __strong __typeof(weakSelf) strongSelf = weakSelf;
+            strongSelf.askingStop = NO;
+            if (!strongSelf.running) {
+                [YTMUDownloadPanel dismissCurrent];
+                return;
+            }
+            strongSelf.hud = nil;
+            [strongSelf showStatus:strongSelf.statusTitle step:strongSelf.statusStep details:strongSelf.statusDetails progress:strongSelf.statusProgress];
+        }],
+    ];
+    self.hud = panel;
 }
 
 - (void)cancelPressed:(UIButton *)sender {
     self.cancelled = YES;
-    self.hud.detailsLabel.text = @"Stopping…";
+    self.hud.details = @"Stopping…";
+    self.hud.buttons = @[];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         [MobileFFmpeg cancel];
     });
@@ -521,14 +550,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 
 - (void)startWithBrowseID:(NSString *)browseID {
     if (self.running) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Playlist download running"
-                                                                       message:@"Stop it? Songs saved so far are kept."
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Stop" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-            [self stopByUser];
-        }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Keep going" style:UIAlertActionStyleCancel handler:nil]];
-        [[self topViewController] presentViewController:alert animated:YES completion:nil];
+        [self askToStop];
         return;
     }
     // PL... / OLAK5uy_... (album as playlist) -> VL..., albums stay MPREb_...
@@ -541,6 +563,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 
     self.running = YES;
     self.cancelled = NO;
+    self.askingStop = NO;
+    self.steps = nil;
     self.isAlbum = [browseID hasPrefix:@"MPREb_"] || [browseID hasPrefix:@"VLOLAK5uy_"];
     self.albumArtist = nil;
     self.albumYear = nil;
@@ -918,7 +942,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
         scope = next;
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.hud.detailsLabel.text = [NSString stringWithFormat:@"%lu songs found", (unsigned long)tracks.count];
+            self.hud.details = [NSString stringWithFormat:@"%lu songs found", (unsigned long)tracks.count];
         });
     }
 
@@ -1006,9 +1030,6 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 #pragma mark Confirm
 
 - (void)confirmDownloadOfTracks:(NSArray<YTMUPlaylistTrack *> *)tracks title:(NSString *)title {
-    [self.hud hideAnimated:YES];
-    self.hud = nil;
-
     NSURL *folder = [self folderForTitle:title];
     NSDictionary *index = [self loadIndexInFolder:folder];
     NSUInteger existingM4A = 0, existingMP3 = 0, unavailable = 0;
@@ -1024,34 +1045,44 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
             unavailable++;
     }
 
-    NSString *unavailableNote = unavailable ? [NSString stringWithFormat:@"\n%lu weren't playable last time.", (unsigned long)unavailable] : @"";
-    NSString *message = [NSString stringWithFormat:@"%lu songs. Already downloaded: %lu as .m4a, %lu as .mp3.%@\n\n.m4a = original quality, fastest. .mp3 = converted (~190 kbps), a few seconds extra per song.\n\nAfter you confirm, press Play on this page. The player jumps through the songs while they download. Keep YTM open (tip: mute your phone).\n\nSaved in Files > YouTube Music > YTMusicUltimate > %@",
-                         (unsigned long)tracks.count, (unsigned long)existingM4A, (unsigned long)existingMP3, unavailableNote, YTMUCleanName(title)];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+    NSMutableString *message = [NSMutableString stringWithFormat:@"Already downloaded: %lu as .m4a, %lu as .mp3", (unsigned long)existingM4A, (unsigned long)existingMP3];
+    if (unavailable)
+        [message appendFormat:@"\n%lu weren't playable last time", (unsigned long)unavailable];
+    [message appendString:@"\n\n.m4a: original quality, fastest\n.mp3: converted (~190 kbps), a few seconds more per song"];
+    [message appendString:@"\n\nAfter you confirm, press Play on this page: the player jumps through the songs while they download. Keep YouTube Music open (tip: mute your phone). Updating also checks the order and every song's lyrics."];
+    [message appendFormat:@"\n\nFiles › YouTube Music › YTMusicUltimate › %@", YTMUCleanName(title)];
 
     NSUInteger missingM4A = tracks.count - existingM4A;
     NSUInteger missingMP3 = tracks.count - existingMP3;
-    NSString *m4aTitle = missingM4A ? [NSString stringWithFormat:@"Download %lu as .m4a", (unsigned long)missingM4A] : @"Update .m4a order only";
-    NSString *mp3Title = missingMP3 ? [NSString stringWithFormat:@"Download %lu as .mp3", (unsigned long)missingMP3] : @"Update .mp3 order only";
+    NSString *m4aTitle = missingM4A ? [NSString stringWithFormat:@"Download %lu as .m4a", (unsigned long)missingM4A] : @"Update .m4a";
+    NSString *mp3Title = missingMP3 ? [NSString stringWithFormat:@"Download %lu as .mp3", (unsigned long)missingMP3] : @"Update .mp3";
 
-    [alert addAction:[UIAlertAction actionWithTitle:m4aTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        self.format = @"m4a";
-        [self beginCaptureOfTracks:tracks title:title];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:mp3Title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        self.format = @"mp3";
-        [self beginCaptureOfTracks:tracks title:title];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:LOC(@"CANCEL") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
-        [self finishWithMessage:@"Cancelled" details:nil icon:nil];
-    }]];
-
-    [[self topViewController] presentViewController:alert animated:YES completion:nil];
+    YTMUDownloadPanel *panel = [YTMUDownloadPanel showCentered];
+    panel.step = [NSString stringWithFormat:@"%@ · %lu songs", self.isAlbum ? @"Album" : @"Playlist", (unsigned long)tracks.count];
+    panel.title = title;
+    panel.details = message;
+    __weak __typeof(self) weakSelf = self;
+    panel.buttons = @[
+        [YTMUPanelButton buttonWithTitle:m4aTitle style:YTMUPanelButtonPrimary handler:^{
+            weakSelf.format = @"m4a";
+            [weakSelf beginCaptureOfTracks:tracks title:title];
+        }],
+        [YTMUPanelButton buttonWithTitle:mp3Title style:YTMUPanelButtonSecondary handler:^{
+            weakSelf.format = @"mp3";
+            [weakSelf beginCaptureOfTracks:tracks title:title];
+        }],
+        [YTMUPanelButton buttonWithTitle:LOC(@"CANCEL") style:YTMUPanelButtonPlain handler:^{
+            [weakSelf finishWithMessage:@"Cancelled" details:nil icon:@"xmark"];
+        }],
+    ];
+    self.hud = panel;
 }
 
 #pragma mark Capture mode
 
 - (void)beginCaptureOfTracks:(NSArray<YTMUPlaylistTrack *> *)tracks title:(NSString *)title {
+    if (self.steps || !self.running)
+        return;
     self.collectionTitle = title;
     self.folder = [self folderForTitle:title];
     [[NSFileManager defaultManager] createDirectoryAtURL:self.folder withIntermediateDirectories:YES attributes:nil error:nil];
@@ -1102,14 +1133,51 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     self.knownNorms = norms;
     self.totalToDownload = self.pending.count;
 
+    // What this run does, shown step by step
+    NSMutableArray<NSString *> *steps = [NSMutableArray array];
+    if (existing.count)
+        [steps addObject:@"Checking songs"];
+    if (self.pending.count)
+        [steps addObject:@"Downloading"];
+    [steps addObject:@"Lyrics"];
+    [steps addObject:@"Cover & info"];
+    self.steps = steps;
+
     [self beginKeepAlive];
     [MobileFFmpegConfig setStatisticsDelegate:nil];
 
-    // Songs that are already there: only fix name + track number if they moved
+    if (!existing.count) {
+        [self startCaptureOrFinish];
+        return;
+    }
+    // Songs that are already there first: still in place, name + track number fixed if they moved
+    [self showStatus:[self statusTitleWith:nil] step:@"Checking songs"
+             details:[NSString stringWithFormat:@"0 / %lu songs checked", (unsigned long)existing.count] progress:0];
     dispatch_async(self.workQueue, ^{
         [self renumberExistingTracks:existing];
+        NSUInteger moved = self.movedCount;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!self.running || self.cancelled)
+                return;
+            NSString *result = moved ? [NSString stringWithFormat:@"%lu songs there · %lu moved, renumbered", (unsigned long)existing.count, (unsigned long)moved]
+                                     : [NSString stringWithFormat:@"%lu songs there · order is fine", (unsigned long)existing.count];
+            [self showStatus:[self statusTitleWith:nil] step:@"Checking songs" details:result progress:1];
+            // Long enough to read it
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (self.running && !self.cancelled)
+                    [self startCaptureOrFinish];
+            });
+        });
     });
+}
 
+// "Playlist name · .m4a"
+- (NSString *)statusTitleWith:(NSString *)suffix {
+    NSString *title = [NSString stringWithFormat:@"%@ · .%@", self.collectionTitle ?: @"", self.format ?: @"m4a"];
+    return suffix.length ? [title stringByAppendingFormat:@" · %@", suffix] : title;
+}
+
+- (void)startCaptureOrFinish {
     if (self.pending.count == 0) {
         self.capturing = NO;
         [self checkDone];
@@ -1147,7 +1215,25 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 - (void)renumberExistingTracks:(NSArray<YTMUPlaylistTrack *> *)tracks {
     NSFileManager *fm = [NSFileManager defaultManager];
     BOOL changed = NO;
+    NSUInteger checked = 0;
+    NSTimeInterval lastReport = 0;
     for (YTMUPlaylistTrack *track in tracks) {
+        if (self.cancelled)
+            break;
+        checked++;
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        if (now - lastReport > 0.1 || checked == tracks.count) {
+            lastReport = now;
+            NSUInteger checkedNow = checked, moved = self.movedCount;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!self.running || self.cancelled || self.capturing)
+                    return;
+                NSString *details = [NSString stringWithFormat:@"%lu / %lu songs checked", (unsigned long)checkedNow, (unsigned long)tracks.count];
+                if (moved)
+                    details = [details stringByAppendingFormat:@" · %lu renumbered", (unsigned long)moved];
+                [self showStatus:[self statusTitleWith:nil] step:@"Checking songs" details:details progress:(float)checkedNow / (float)tracks.count];
+            });
+        }
         NSString *key = [self indexKeyForVideoID:track.videoID];
         NSMutableDictionary *entry = [self.index[key] mutableCopy];
         if ([entry[@"position"] integerValue] == track.position)
@@ -1215,8 +1301,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
             details = [details stringByAppendingString:@"\nFinishing downloads…"];
     }
 
-    NSString *statusTitle = [NSString stringWithFormat:@"%@ · .%@", self.collectionTitle ?: @"", self.format ?: @"m4a"];
-    [self showStatus:statusTitle details:details progress:total ? (float)finished / (float)total : 0];
+    [self showStatus:[self statusTitleWith:nil] step:@"Downloading" details:details progress:total ? (float)finished / (float)total : 0];
 }
 
 // Posted by Downloading.x whenever the player starts a new song
@@ -1476,6 +1561,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         [MobileFFmpeg cancel];
     });
+    [self showStatus:[self statusTitleWith:nil] step:nil details:@"Stopping…" progress:-1];
+    self.hud.buttons = @[];
     [self checkDone];
 }
 
@@ -1497,12 +1584,14 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     @synchronized (self.freshLyrics) {
         fresh = [self.freshLyrics copy];
     }
-    NSString *statusTitle = [NSString stringWithFormat:@"%@ · Lyrics", self.collectionTitle ?: @""];
+    NSString *statusTitle = [self statusTitleWith:nil];
     dispatch_async(self.workQueue, ^{
+        // Stopped: nothing more (no lyrics, no cover), straight to the summary
+        BOOL stopped = self.cancelled;
         // Lyrics of every song of the list, checked again so they're the newest (wrong ones
         // replaced, ones YTM removed deleted); the songs saved just now already are.
         // A progress box shows it before the summary.
-        if (folder) {
+        if (folder && !stopped) {
             NSMutableArray<NSDictionary *> *songs = [NSMutableArray array];
             [index enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSDictionary *entry, BOOL *stop) {
                 if (![entry isKindOfClass:[NSDictionary class]] || ![entry[@"file"] isKindOfClass:[NSString class]])
@@ -1517,17 +1606,22 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
             void (^report)(void) = ^{
                 NSUInteger doneNow = done, foundNow = found;
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [self showStatus:statusTitle
-                             details:[NSString stringWithFormat:@"Checking lyrics %lu / %lu · %lu with lyrics", (unsigned long)doneNow, (unsigned long)total, (unsigned long)foundNow]
-                            progress:total ? (float)doneNow / (float)total : 1];
+                    if (self.cancelled)
+                        return;
+                    NSString *line = total ? [NSString stringWithFormat:@"%lu / %lu songs checked · %lu with lyrics", (unsigned long)doneNow, (unsigned long)total, (unsigned long)foundNow]
+                                           : @"Lyrics of the new songs saved";
+                    [self showStatus:statusTitle step:@"Lyrics" details:line progress:total ? (float)doneNow / (float)total : 1];
                 });
             };
-            if (total)
-                report();
+            report();
             dispatch_group_t group = dispatch_group_create();
             dispatch_semaphore_t slots = dispatch_semaphore_create(3);
             for (NSDictionary *song in songs) {
                 dispatch_semaphore_wait(slots, DISPATCH_TIME_FOREVER);
+                if (self.cancelled) {
+                    dispatch_semaphore_signal(slots);
+                    break;
+                }
                 dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                     NSURL *audioURL = song[@"url"];
                     NSString *key = song[@"key"];
@@ -1544,13 +1638,21 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
                 });
             }
             dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
-            YTMUCleanLyricsFolder(folder);
+            stopped = self.cancelled;
+            if (!stopped)
+                YTMUCleanLyricsFolder(folder);
+        }
+        if (folder && !stopped) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!self.cancelled)
+                    [self showStatus:statusTitle step:@"Cover & info" details:@"Saving cover, creator and description…" progress:-1];
+            });
         }
         NSString *creatorImageURL = creatorURL;
         // Albums without a picture on the page: the artist's own page has one
-        if (folder && !creatorImageURL && !pageAvatar && artistChannel)
+        if (folder && !stopped && !creatorImageURL && !pageAvatar && artistChannel)
             creatorImageURL = [self artistImageURLForChannel:artistChannel];
-        if (folder && self.downloadedCount + self.skippedCount > 0) {
+        if (folder && !stopped && self.downloadedCount + self.skippedCount > 0) {
             if (coverURL) {
                 UIImage *cover = [UIImage imageWithData:YTMUGet(coverURL)];
                 NSData *png = cover ? UIImagePNGRepresentation(cover) : nil;
@@ -1584,8 +1686,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
                 [UIPasteboard generalPasteboard].string = [self.failures componentsJoinedByString:@"\n"];
                 [summary appendString:@"\nFailed songs copied to clipboard"];
             }
-            BOOL stopped = self.cancelled;
-            [self finishWithMessage:stopped ? @"Stopped" : LOC(@"DONE") details:summary icon:stopped ? @"xmark" : @"checkmark"];
+            BOOL stoppedNow = self.cancelled;
+            [self finishWithMessage:stoppedNow ? @"Stopped" : LOC(@"DONE") details:summary icon:stoppedNow ? @"xmark" : @"checkmark"];
         });
     });
 }
@@ -1697,7 +1799,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     [self saveIndex:self.index inFolder:self.folder];
 
     // Lyrics into the folder's Lyrics folder, before the song counts as done
-    YTMUSaveLyricsForDownload(finalURL, track.videoID, track.title, artist, 0, YES);
+    if (!self.cancelled)
+        YTMUSaveLyricsForDownload(finalURL, track.videoID, track.title, artist, 0, YES);
     @synchronized (self.freshLyrics) {
         [self.freshLyrics addObject:finalURL.path];
     }
