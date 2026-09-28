@@ -1979,6 +1979,10 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
         [self presentLyrics:saved track:track];
         return;
     }
+    if ([YTMULyrics isKnownWithoutLyrics:track]) {
+        YTMUShowInfoBox(self, @"No lyrics available");
+        return;
+    }
     // Not saved yet (older download): ask YTM once, spinner in the button meanwhile
     self.lyricsButton.hidden = YES;
     [self.lyricsSpinner startAnimating];
@@ -1988,7 +1992,7 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
         if (![[YTMUOfflinePlayer shared].currentTrack.url isEqual:track.url] || !self.view.window)
             return;
         if (!lyrics) {
-            YTMUShowInfoBox(self, offline ? @"No lyrics available offline" : @"No lyrics available");
+            YTMUShowInfoBox(self, @"No lyrics available");
             return;
         }
         [self presentLyrics:lyrics track:track];

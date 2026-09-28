@@ -521,10 +521,39 @@ static YTMULyrics *YTMULyricsFromFileText(NSString *text) {
     return lyrics;
 }
 
-static YTMULyrics *YTMUReadLyricsFile(NSURL *audioURL) {
+// A song that was checked and has no lyrics gets a file with only this tag, so the lyrics
+// button answers right away instead of asking again every time
+static NSString *const YTMUNoLyricsTag = @"[lyrics:none]";
+
+static NSString *YTMULyricsFileContents(NSURL *audioURL) {
     NSURL *file = YTMULyricsFileForAudio(audioURL);
-    NSString *text = file ? [NSString stringWithContentsOfURL:file encoding:NSUTF8StringEncoding error:nil] : nil;
-    return text.length ? YTMULyricsFromFileText(text) : nil;
+    return file ? [NSString stringWithContentsOfURL:file encoding:NSUTF8StringEncoding error:nil] : nil;
+}
+
+static BOOL YTMUIsNoLyricsText(NSString *text) {
+    return text.length && [text rangeOfString:YTMUNoLyricsTag].location != NSNotFound;
+}
+
+static YTMULyrics *YTMUReadLyricsFile(NSURL *audioURL) {
+    NSString *text = YTMULyricsFileContents(audioURL);
+    if (!text.length || YTMUIsNoLyricsText(text))
+        return nil;
+    YTMULyrics *lyrics = YTMULyricsFromFileText(text);
+    return lyrics.lines.count ? lyrics : nil;
+}
+
+static void YTMUWriteNoLyricsFile(NSURL *audioURL, NSString *title, NSString *artist) {
+    NSURL *file = YTMULyricsFileForAudio(audioURL);
+    if (!file)
+        return;
+    NSMutableString *text = [NSMutableString string];
+    if (title.length)
+        [text appendFormat:@"[ti:%@]\n", YTMULyricsTagValue(title)];
+    if (artist.length)
+        [text appendFormat:@"[ar:%@]\n", YTMULyricsTagValue(artist)];
+    [text appendFormat:@"%@\n", YTMUNoLyricsTag];
+    [[NSFileManager defaultManager] createDirectoryAtURL:[file URLByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+    [text writeToURL:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 static BOOL YTMUWriteLyricsFile(NSURL *audioURL, YTMULyrics *lyrics, NSString *title, NSString *artist) {
@@ -591,8 +620,8 @@ static YTMULyrics *YTMUEnsureLyricsFile(NSURL *audioURL, NSString *videoID, NSSt
     YTMULyrics *saved = YTMUReadLyricsFile(audioURL);
     if (unreliable)
         *unreliable = NO;
-    if (saved && !refresh)
-        return saved;
+    if (!refresh && (saved || YTMUIsNoLyricsText(YTMULyricsFileContents(audioURL))))
+        return saved; // saved lyrics, or checked before: none
     if (duration <= 0)
         duration = YTMUAudioDuration(audioURL);
 
@@ -615,8 +644,7 @@ static YTMULyrics *YTMUEnsureLyricsFile(NSURL *audioURL, NSString *videoID, NSSt
         return saved;
     }
     // Checked: this song has no (right) lyrics
-    if (saved)
-        YTMUDeleteLyrics(audioURL);
+    YTMUWriteNoLyricsFile(audioURL, title, artist);
     YTMUForgetLegacyLyrics(videoID, title, artist);
     return nil;
 }
@@ -676,6 +704,10 @@ void YTMUPrefetchLyricsForSong(NSURL *audioURL, NSString *videoID, NSString *tit
 
 + (YTMULyrics *)savedLyricsForTrack:(YTMUOfflineTrack *)track {
     return YTMUReadLyricsFile(track.url);
+}
+
++ (BOOL)isKnownWithoutLyrics:(YTMUOfflineTrack *)track {
+    return YTMUIsNoLyricsText(YTMULyricsFileContents(track.url));
 }
 
 + (void)loadForTrack:(YTMUOfflineTrack *)track completion:(void (^)(YTMULyrics *, BOOL))completion {

@@ -549,6 +549,12 @@ static void YTMUStyleLyricsPill(UIButton *button, BOOL active) {
     self.track = current;
     self.lyrics = nil;
     [self showTrack];
+    // Saved (or known to have none): right away
+    YTMULyrics *saved = [YTMULyrics savedLyricsForTrack:current];
+    if (saved || [YTMULyrics isKnownWithoutLyrics:current]) {
+        [self showLyrics:saved];
+        return;
+    }
     self.messageLabel.hidden = YES;
     self.tableView.hidden = YES;
     [self.spinner startAnimating];
@@ -556,8 +562,6 @@ static void YTMUStyleLyricsPill(UIButton *button, BOOL active) {
         if (![[YTMUOfflinePlayer shared].currentTrack.url isEqual:current.url] || self.track != current)
             return;
         [self showLyrics:lyrics];
-        if (!lyrics && offline)
-            self.messageLabel.text = @"No lyrics available offline";
     }];
 }
 

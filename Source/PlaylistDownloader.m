@@ -368,7 +368,6 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 @property (atomic) NSUInteger removedCount;             // songs no longer in the list, removed from the folder
 @property (nonatomic, copy) NSArray<YTMUPlaylistTrack *> *listTracks; // the list as it is now, in order
 @property (nonatomic, strong) NSOperationQueue *downloadOps;  // songs downloading at the same time
-@property (nonatomic, strong) NSOperationQueue *lyricsOps;    // lyrics of the new songs, next to the downloads
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSData *> *coverCache; // cover URL -> JPEG
 @property (nonatomic, copy) NSString *statusTitle, *statusStep, *statusDetails;
 @property (nonatomic) float statusProgress;
@@ -396,7 +395,6 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 @property (nonatomic) NSUInteger skippedCount;
 @property (nonatomic) NSUInteger queuedCount;
 @property (atomic) NSUInteger movedCount;
-@property (nonatomic, strong) NSMutableSet<NSString *> *freshLyrics; // songs whose lyrics were saved this run
 @property (nonatomic) BOOL finishingUp; // final pass (lyrics, cover) running
 @property (nonatomic, strong) NSMutableArray<NSString *> *failures;
 @property (nonatomic, copy) NSString *lastCapturedID;
@@ -1215,7 +1213,6 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
     self.skippedCount = 0;
     self.queuedCount = 0;
     self.movedCount = 0;
-    self.freshLyrics = [NSMutableSet set];
     self.lapSeen = [NSMutableSet set];
     self.finishingUp = NO;
     self.lastCapturedID = nil;
@@ -1255,9 +1252,6 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
     self.downloadOps = [NSOperationQueue new];
     self.downloadOps.maxConcurrentOperationCount = 3;
     self.downloadOps.qualityOfService = NSQualityOfServiceUserInitiated;
-    self.lyricsOps = [NSOperationQueue new];
-    self.lyricsOps.maxConcurrentOperationCount = 4;
-    self.lyricsOps.qualityOfService = NSQualityOfServiceUtility;
     BOOL hasSongs = NO;
     for (NSString *key in self.index) {
         if (YTMUVideoIDOfIndexKey(key)) {
@@ -1840,29 +1834,13 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
     NSString *creator = self.creatorName;
     NSString *details = self.collectionDetails;
     NSURL *folder = self.folder;
-    NSSet<NSString *> *fresh;
-    @synchronized (self.freshLyrics) {
-        fresh = [self.freshLyrics copy];
-    }
     NSString *statusTitle = [self statusTitleWith:nil];
-    NSOperationQueue *lyricsOps = self.lyricsOps;
     dispatch_async(self.workQueue, ^{
         // Stopped: nothing more (no lyrics, no cover), straight to the summary
         BOOL stopped = self.cancelled;
-        // Lyrics of the new songs still loading
-        if (stopped)
-            [lyricsOps cancelAllOperations];
-        if (lyricsOps.operationCount && !stopped) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (!self.cancelled)
-                    [self showStatus:statusTitle step:@"Lyrics" details:@"Lyrics of the new songs…" progress:-1];
-            });
-        }
-        [lyricsOps waitUntilAllOperationsAreFinished];
-        stopped = self.cancelled;
         NSDictionary *index = [self.index copy]; // the work queue's own (downloads are done)
-        // Lyrics of every song of the list, checked again so they're the newest (wrong ones
-        // replaced, ones YTM removed deleted); the songs saved just now already are.
+        // Every song is saved now: lyrics of all songs of the list (new ones fetched, the others
+        // checked again so they're the newest: wrong ones replaced, removed ones marked as none).
         // A progress box shows it before the summary.
         if (folder && !stopped) {
             NSMutableArray<NSDictionary *> *songs = [NSMutableArray array];
@@ -1870,7 +1848,7 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
                 if (![entry isKindOfClass:[NSDictionary class]] || ![entry[@"file"] isKindOfClass:[NSString class]])
                     return;
                 NSURL *audioURL = [folder URLByAppendingPathComponent:entry[@"file"]];
-                if (![[NSFileManager defaultManager] fileExistsAtPath:audioURL.path] || [fresh containsObject:audioURL.path])
+                if (![[NSFileManager defaultManager] fileExistsAtPath:audioURL.path])
                     return;
                 [songs addObject:@{@"url": audioURL, @"key": key}];
             }];
@@ -1882,7 +1860,7 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
                     if (self.cancelled || [self.skippedStep isEqualToString:@"Lyrics"])
                         return;
                     NSString *line = total ? [NSString stringWithFormat:@"%lu / %lu songs checked · %lu with lyrics", (unsigned long)doneNow, (unsigned long)total, (unsigned long)foundNow]
-                                           : @"Lyrics of the new songs saved";
+                                           : @"No songs to check";
                     [self showStatus:statusTitle step:@"Lyrics" details:line progress:total ? (float)doneNow / (float)total : 1];
                 });
             };
@@ -2115,15 +2093,7 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
         [self saveIndex:self.index inFolder:self.folder];
     });
 
-    // Lyrics next to the downloads (the Lyrics step waits for them)
-    @synchronized (self.freshLyrics) {
-        [self.freshLyrics addObject:finalURL.path];
-    }
-    NSString *lyricsArtist = artist;
-    [self.lyricsOps addOperationWithBlock:^{
-        if (!self.cancelled)
-            YTMUSaveLyricsForDownload(finalURL, track.videoID, track.title, lyricsArtist, 0, YES);
-    }];
+    // Lyrics come in the Lyrics step, once every song is saved
 
     dispatch_async(dispatch_get_main_queue(), ^{
         self.downloadedCount++;
