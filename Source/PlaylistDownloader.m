@@ -452,6 +452,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 @property (nonatomic, strong) NSSet<NSString *> *knownNorms;
 @property (nonatomic, strong) NSSet<NSString *> *knownAlnums;
 @property (nonatomic, weak) id lastPlayer;
+@property (nonatomic, copy) NSString *activatedID;      // video the player activated last
 @property (nonatomic) NSTimeInterval lastActivity;
 @property (nonatomic, strong) NSTimer *watchdog;
 @property (nonatomic) NSUInteger activationCount; // song changes seen (Next-button fallback)
@@ -1299,6 +1300,7 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
     self.lapSeen = [NSMutableSet set];
     self.finishingUp = NO;
     self.lastCapturedID = nil;
+    self.activatedID = nil;
 
     self.pendingByTitle = [NSMutableDictionary dictionary];
     self.pendingByNorm = [NSMutableDictionary dictionary];
@@ -1658,9 +1660,11 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
 - (void)playerDidActivate:(NSNotification *)notification {
     id player = notification.object;
     id video = notification.userInfo[@"video"];
+    NSString *activatedID = [notification.userInfo[@"videoID"] isKindOfClass:[NSString class]] ? notification.userInfo[@"videoID"] : nil;
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.capturing)
             return;
+        self.activatedID = activatedID;
         self.lastPlayer = player;
         self.lastActivity = [NSDate timeIntervalSinceReferenceDate];
         self.activationCount++;
@@ -1669,10 +1673,15 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
             [self updateStatus];
         }
 
-        // Song we already have: skip right away, no need to wait for its data
-        NSString *videoID = [self videoIDOfPlayer:player];
-        // (the ID can still be the previous song's for a moment, that one equals lastCapturedID)
-        if (videoID && ![videoID isEqualToString:self.lastCapturedID] &&
+        // Song we already have: skip right away, no need to wait for its data. The ID comes
+        // from the activation itself (the player can still report the previous song for a moment,
+        // which would skip the new one)
+        NSString *videoID = activatedID;
+        if (!videoID.length) {
+            [self captureLaterInPlayer:player video:video];
+            return;
+        }
+        if (![videoID isEqualToString:self.lastCapturedID] &&
             !self.pending[videoID] && [self.allVideoIDs containsObject:videoID]) {
             self.lastCapturedID = videoID;
             if (![self endLapIfRepeated:videoID player:player])
@@ -1680,9 +1689,13 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
             return;
         }
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self capturePlayer:player video:video attempt:0];
-        });
+        [self captureLaterInPlayer:player video:video];
+    });
+}
+
+- (void)captureLaterInPlayer:(id)player video:(id)video {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self capturePlayer:player video:video attempt:0];
     });
 }
 
@@ -1757,7 +1770,11 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
     if (!self.capturing || !player)
         return;
 
-    NSString *videoID = [self videoIDOfPlayer:player];
+    // The song the player activated last; the player's own (which can lag behind) once that
+    // one is done
+    NSString *videoID = self.activatedID;
+    if (!videoID.length || [videoID isEqualToString:self.lastCapturedID])
+        videoID = [self videoIDOfPlayer:player];
     if (!videoID) {
         if (attempt < 6) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
