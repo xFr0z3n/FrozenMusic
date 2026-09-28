@@ -359,6 +359,9 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 @property (nonatomic, weak) YTMUDownloadPanel *hud; // the downloader's box on screen
 @property (nonatomic, copy) NSArray<NSString *> *steps; // what this run does, in order
 @property (nonatomic) BOOL askingStop;                  // stop question is on screen
+@property (atomic, copy) NSString *skippedStep;         // step the user skipped
+@property (nonatomic, copy) NSString *buttonsKey;       // which buttons the top box shows
+@property (nonatomic, strong) NSMutableSet<NSString *> *lapSeen; // songs we have, played since the last new one
 @property (nonatomic, copy) NSString *statusTitle, *statusStep, *statusDetails;
 @property (nonatomic) float statusProgress;
 @property (nonatomic, strong) dispatch_queue_t workQueue;
@@ -470,21 +473,57 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     self.statusStep = step;
     self.statusDetails = details;
     self.statusProgress = progress;
-    if (self.askingStop)
+    // Stopping: only the "Stopping…" box (step nil) until the summary
+    if (self.askingStop || (self.cancelled && step))
         return;
     YTMUDownloadPanel *panel = self.hud;
+    BOOL fresh = NO;
     if (!panel || !panel.atTop || panel != [YTMUDownloadPanel current]) {
         panel = [YTMUDownloadPanel showAtTop];
-        __weak __typeof(self) weakSelf = self;
-        panel.buttons = @[[YTMUPanelButton buttonWithTitle:@"Stop" style:YTMUPanelButtonDestructive handler:^{
-            [weakSelf askToStop];
-        }]];
         self.hud = panel;
+        fresh = YES;
+    }
+    // Downloading and Lyrics can be skipped (e.g. songs that won't play), Stop always
+    BOOL canSkip = !self.cancelled && ([step isEqualToString:@"Downloading"] || [step isEqualToString:@"Lyrics"]) && ![step isEqualToString:self.skippedStep];
+    NSString *key = self.cancelled ? @"none" : (canSkip ? @"skip" : @"stop");
+    if (fresh || ![key isEqualToString:self.buttonsKey]) {
+        self.buttonsKey = key;
+        __weak __typeof(self) weakSelf = self;
+        NSMutableArray<YTMUPanelButton *> *buttons = [NSMutableArray array];
+        if (canSkip) {
+            [buttons addObject:[YTMUPanelButton buttonWithTitle:@"Skip step" style:YTMUPanelButtonSecondary handler:^{
+                [weakSelf skipStep];
+            }]];
+        }
+        if (!self.cancelled) {
+            [buttons addObject:[YTMUPanelButton buttonWithTitle:@"Stop" style:YTMUPanelButtonDestructive handler:^{
+                [weakSelf askToStop];
+            }]];
+        }
+        panel.buttons = buttons;
     }
     panel.title = title;
     panel.step = [self stepText:step];
     panel.details = details;
     panel.progress = progress;
+}
+
+// Downloading: the songs that didn't come yet are left out (e.g. not playable).
+// Lyrics: the songs not checked yet keep the lyrics they have.
+- (void)skipStep {
+    if (!self.running || self.cancelled)
+        return;
+    NSString *step = self.statusStep;
+    if ([step isEqualToString:@"Downloading"] && self.capturing) {
+        self.skippedStep = step;
+        id player = self.lastPlayer;
+        [self endCaptureListingMissing:NO skipped:YES];
+        if ([player respondsToSelector:@selector(pause)])
+            [player performSelector:@selector(pause)];
+    } else if ([step isEqualToString:@"Lyrics"]) {
+        self.skippedStep = step;
+        [self showStatus:self.statusTitle step:step details:@"Skipping the rest…" progress:self.statusProgress];
+    }
 }
 
 - (void)askToStop {
@@ -565,6 +604,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     self.cancelled = NO;
     self.askingStop = NO;
     self.steps = nil;
+    self.skippedStep = nil;
+    self.buttonsKey = nil;
     self.isAlbum = [browseID hasPrefix:@"MPREb_"] || [browseID hasPrefix:@"VLOLAK5uy_"];
     self.albumArtist = nil;
     self.albumYear = nil;
@@ -1098,6 +1139,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     self.queuedCount = 0;
     self.movedCount = 0;
     self.freshLyrics = [NSMutableSet set];
+    self.lapSeen = [NSMutableSet set];
     self.finishingUp = NO;
     self.lastCapturedID = nil;
 
@@ -1325,7 +1367,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
         if (videoID && ![videoID isEqualToString:self.lastCapturedID] &&
             !self.pending[videoID] && [self.allVideoIDs containsObject:videoID]) {
             self.lastCapturedID = videoID;
-            [self skipAheadInPlayer:player attempt:0];
+            if (![self endLapIfRepeated:videoID player:player])
+                [self skipAheadInPlayer:player attempt:0];
             return;
         }
 
@@ -1333,6 +1376,21 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
             [self capturePlayer:player video:video attempt:0];
         });
     });
+}
+
+// A song we already have is playing. Seen before since the last new song = the player went
+// all the way round (the missing ones don't play, e.g. unavailable) -> done instead of looping.
+- (BOOL)endLapIfRepeated:(NSString *)videoID player:(id)player {
+    if (!videoID)
+        return NO;
+    if (![self.lapSeen containsObject:videoID]) {
+        [self.lapSeen addObject:videoID];
+        return NO;
+    }
+    [self endCaptureListingMissing:YES];
+    if ([player respondsToSelector:@selector(pause)])
+        [player performSelector:@selector(pause)];
+    return YES;
 }
 
 - (YTMUPlaylistTrack *)pendingTrackMatchingTitle:(NSString *)title {
@@ -1386,7 +1444,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
     if (!track && [self.allVideoIDs containsObject:videoID]) {
         self.lastCapturedID = videoID;
         self.strayCount = 0;
-        [self skipAheadInPlayer:player attempt:0];
+        if (![self endLapIfRepeated:videoID player:player])
+            [self skipAheadInPlayer:player attempt:0];
         return;
     }
 
@@ -1417,7 +1476,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
         } else {
             self.strayCount++;
             // Two songs in a row that aren't in the list: autoplay after the end
-            if (self.strayCount >= 2 && self.pending.count < self.totalToDownload) {
+            // (after at least one song of the list played)
+            if (self.strayCount >= 2 && (self.pending.count < self.totalToDownload || self.lapSeen.count > 0)) {
                 [self endCaptureListingMissing:YES];
                 if ([player respondsToSelector:@selector(pause)])
                     [player performSelector:@selector(pause)];
@@ -1428,6 +1488,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
         return;
     }
     self.strayCount = 0;
+    [self.lapSeen removeAllObjects]; // a new song: the lap starts over
 
     if (!hls.length) {
         self.lastCapturedID = videoID;
@@ -1525,10 +1586,23 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
 }
 
 - (void)endCaptureListingMissing:(BOOL)listMissing {
+    [self endCaptureListingMissing:listMissing skipped:NO];
+}
+
+// skipped: the user skipped the rest (not remembered as unplayable)
+- (void)endCaptureListingMissing:(BOOL)listMissing skipped:(BOOL)skipped {
+    if (!self.capturing && !self.pending.count)
+        return;
     self.capturing = NO;
     [self.watchdog invalidate];
     self.watchdog = nil;
-    if (listMissing) {
+    if (skipped) {
+        NSArray *remaining = [self.pending.allValues sortedArrayUsingComparator:^NSComparisonResult(YTMUPlaylistTrack *a, YTMUPlaylistTrack *b) {
+            return a.position < b.position ? NSOrderedAscending : (a.position > b.position ? NSOrderedDescending : NSOrderedSame);
+        }];
+        for (YTMUPlaylistTrack *track in remaining)
+            [self.failures addObject:[NSString stringWithFormat:@"%ld. %@ (skipped)", (long)track.position, track.title]];
+    } else if (listMissing) {
         NSArray *remaining = [self.pending.allValues sortedArrayUsingComparator:^NSComparisonResult(YTMUPlaylistTrack *a, YTMUPlaylistTrack *b) {
             return a.position < b.position ? NSOrderedAscending : (a.position > b.position ? NSOrderedDescending : NSOrderedSame);
         }];
@@ -1606,7 +1680,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
             void (^report)(void) = ^{
                 NSUInteger doneNow = done, foundNow = found;
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    if (self.cancelled)
+                    if (self.cancelled || [self.skippedStep isEqualToString:@"Lyrics"])
                         return;
                     NSString *line = total ? [NSString stringWithFormat:@"%lu / %lu songs checked · %lu with lyrics", (unsigned long)doneNow, (unsigned long)total, (unsigned long)foundNow]
                                            : @"Lyrics of the new songs saved";
@@ -1618,7 +1692,7 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
             dispatch_semaphore_t slots = dispatch_semaphore_create(3);
             for (NSDictionary *song in songs) {
                 dispatch_semaphore_wait(slots, DISPATCH_TIME_FOREVER);
-                if (self.cancelled) {
+                if (self.cancelled || [self.skippedStep isEqualToString:@"Lyrics"]) {
                     dispatch_semaphore_signal(slots);
                     break;
                 }
@@ -1681,10 +1755,10 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
             NSMutableString *summary = [NSMutableString stringWithFormat:@"%lu downloaded · %lu already there", (unsigned long)self.downloadedCount, (unsigned long)self.skippedCount];
             if (self.movedCount)
                 [summary appendFormat:@" (%lu renumbered)", (unsigned long)self.movedCount];
-            [summary appendFormat:@" · %lu failed", (unsigned long)self.failures.count];
+            [summary appendFormat:@" · %lu not downloaded", (unsigned long)self.failures.count];
             if (self.failures.count) {
                 [UIPasteboard generalPasteboard].string = [self.failures componentsJoinedByString:@"\n"];
-                [summary appendString:@"\nFailed songs copied to clipboard"];
+                [summary appendString:@"\nThe list of songs not downloaded was copied to the clipboard"];
             }
             BOOL stoppedNow = self.cancelled;
             [self finishWithMessage:stoppedNow ? @"Stopped" : LOC(@"DONE") details:summary icon:stoppedNow ? @"xmark" : @"checkmark"];
