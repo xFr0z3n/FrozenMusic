@@ -37,10 +37,6 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
         [YTMUPanelButton buttonWithTitle:LOC(@"CANCEL") style:YTMUPanelButtonSecondary handler:^{
             [weakSelf cancelDownloading:nil];
         }],
-        // Keeps downloading, the result shows up when it's done
-        [YTMUPanelButton buttonWithTitle:@"Hide" style:YTMUPanelButtonPlain handler:^{
-            [weakSelf.panel dismiss];
-        }],
     ];
     self.panel = panel;
 

@@ -2,6 +2,8 @@
 #import "YTMUActionSheet.h"
 #import "YTMULyrics.h"
 #import "YTMULyricsViewController.h"
+#import "../Headers/YTAlertView.h"
+#import "../Headers/Localization.h"
 #import <QuartzCore/QuartzCore.h>
 #include <float.h>
 
@@ -737,6 +739,14 @@ void YTMUOpenInFiles(NSURL *folder) {
         [[UIApplication sharedApplication] openURL:filesURL options:@{} completionHandler:nil];
 }
 
+// YouTube Music's own confirmation dialog, the same one deleting a song in Downloads uses
+static void YTMUConfirmDelete(NSString *name, void (^action)(void)) {
+    YTAlertView *alertView = [NSClassFromString(@"YTAlertView") confirmationDialogWithAction:action actionTitle:LOC(@"DELETE")];
+    alertView.title = @"YTMusicUltimate";
+    alertView.subtitle = [NSString stringWithFormat:LOC(@"DELETE_MESSAGE"), name ?: @""];
+    [alertView show];
+}
+
 void YTMUShowCollectionMenu(YTMUCollection *collection, UIViewController *presenter, UIView *source, void (^onDeleted)(void)) {
     YTMUShowCollectionMenuWithEdit(collection, presenter, source, onDeleted, nil);
 }
@@ -823,19 +833,16 @@ void YTMUShowCollectionMenuFull(YTMUCollection *collection, UIViewController *pr
             YTMUOpenInFiles(collection.folder);
         }]];
         [sheet addAction:[YTMUSheetAction actionWithTitle:@"Delete download" symbol:@"ytmu.trash" handler:^{
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:collection.name
-                                                                           message:collection.isAlbum ? @"Delete all downloaded songs of this album?" : @"Delete all downloaded songs of this playlist?"
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *deleteAction) {
+            YTMUConfirmDelete(collection.name, ^{
                 YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
                 if ([player.currentTrack.url.path hasPrefix:collection.folder.path])
                     [player stop];
                 [[NSFileManager defaultManager] removeItemAtURL:collection.folder error:nil];
-                if (onDeleted)
-                    onDeleted();
-            }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            [YTMUTopPresenter(presenter) presentViewController:alert animated:YTMUAnimations() completion:nil];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (onDeleted)
+                        onDeleted();
+                });
+            });
         }]];
     }
     [sheet presentFrom:presenter];
@@ -2653,39 +2660,39 @@ static void YTMUMoveReorderControlLeft(UITableViewCell *cell) {
 }
 
 - (void)confirmDeleteTrack:(YTMUOfflineTrack *)track completion:(void (^)(BOOL))completion {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:track.title
-                                                                   message:@"Delete this downloaded song?"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
-        if ([player.currentTrack.url isEqual:track.url])
-            [player stop];
-        [[NSFileManager defaultManager] removeItemAtURL:track.url error:nil];
-        YTMUDeleteLyrics(track.url);
-        NSMutableArray *tracks = [self.tracks mutableCopy];
-        [tracks removeObject:track];
-        self.tracks = tracks;
-        if (self.foundTracks) {
-            NSMutableArray *found = [self.foundTracks mutableCopy];
-            [found removeObject:track];
-            self.foundTracks = found;
-        }
-        if (self.collection.folder) {
-            self.collection.files = [YTMUCollection audioFilesInFolder:self.collection.folder];
-        } else {
-            NSMutableArray<NSURL *> *files = [self.collection.files mutableCopy];
-            [files removeObject:track.url];
-            self.collection.files = files;
-        }
-        [self.tableView reloadData];
-        if (self.onChange)
-            self.onChange();
-        completion(YES);
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
-        completion(NO);
-    }]];
-    [self presentViewController:alert animated:YTMUAnimations() completion:nil];
+    __weak __typeof(self) weakSelf = self;
+    YTMUConfirmDelete(track.url.lastPathComponent.stringByDeletingPathExtension ?: track.title, ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong __typeof(weakSelf) self = weakSelf;
+            YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+            if ([player.currentTrack.url isEqual:track.url])
+                [player stop];
+            [[NSFileManager defaultManager] removeItemAtURL:track.url error:nil];
+            YTMUDeleteLyrics(track.url);
+            if (!self)
+                return;
+            NSMutableArray *tracks = [self.tracks mutableCopy];
+            [tracks removeObject:track];
+            self.tracks = tracks;
+            if (self.foundTracks) {
+                NSMutableArray *found = [self.foundTracks mutableCopy];
+                [found removeObject:track];
+                self.foundTracks = found;
+            }
+            if (self.collection.folder) {
+                self.collection.files = [YTMUCollection audioFilesInFolder:self.collection.folder];
+            } else {
+                NSMutableArray<NSURL *> *files = [self.collection.files mutableCopy];
+                [files removeObject:track.url];
+                self.collection.files = files;
+            }
+            [self.tableView reloadData];
+            if (self.onChange)
+                self.onChange();
+            if (completion)
+                completion(YES);
+        });
+    });
 }
 
 @end

@@ -740,15 +740,43 @@ void YTMUPauseAppPlayer(void) {
         [player performSelector:@selector(pause)];
 }
 
+// Video ID of the video object the player just activated (its own, not the player's
+// "current" one, which can lag behind)
+static NSString *YTMUActivatedVideoID(id video) {
+    for (NSString *key in @[@"videoId", @"videoID", @"contentVideoID"]) {
+        NSString *value = YTMUSafeString(video, key);
+        if (value.length)
+            return value;
+    }
+    for (NSString *key in @[@"singleVideo", @"video", @"contentVideo"]) {
+        id inner = YTMUSafeValue(video, key);
+        for (NSString *innerKey in @[@"videoId", @"videoID"]) {
+            NSString *value = YTMUSafeString(inner, innerKey);
+            if (value.length)
+                return value;
+        }
+    }
+    id details = YTMUSafeValue(YTMUSafeValue(YTMUSafeValue(video, @"playerResponse"), @"playerData"), @"videoDetails");
+    NSString *value = YTMUSafeString(details, @"videoId");
+    return value.length ? value : nil;
+}
+
 // Tells the playlist downloader / offline player whenever the player starts a new song
 // (same hook SponsorBlock.x uses)
 %hook YTPlayerViewController
 - (void)playbackController:(id)arg1 didActivateVideo:(id)arg2 withPlaybackData:(id)arg3 {
     %orig;
     ytmuAppPlayer = self;
+    // The new song's ID right now (read later, the player can still report the previous song)
+    NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
+    if (arg2)
+        userInfo[@"video"] = arg2;
+    NSString *videoID = YTMUActivatedVideoID(arg2) ?: YTMUSafeString(self, @"currentVideoID") ?: YTMUSafeString(self, @"contentVideoID");
+    if (videoID.length)
+        userInfo[@"videoID"] = videoID;
     [[NSNotificationCenter defaultCenter] postNotificationName:@"YTMUPlayerDidActivateVideo"
                                                         object:self
-                                                      userInfo:arg2 ? @{@"video": arg2} : nil];
+                                                      userInfo:userInfo];
 }
 %end
 
