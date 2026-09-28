@@ -74,7 +74,7 @@
     [[self downloading] addObject:language];
     MLKTranslateRemoteModel *model = [MLKTranslateRemoteModel translateRemoteModelWithLanguage:(MLKTranslateLanguage)language];
     MLKModelDownloadConditions *conditions = [[MLKModelDownloadConditions alloc] initWithAllowsCellularAccess:YES
-                                                                                  allowsBackgroundDownloading:YES];
+                                                                                  allowsBackgroundDownloading:NO];
     NSProgress *download = [[MLKModelManager modelManager] downloadModel:model conditions:conditions];
 
     // Progress while it downloads, done / failed from ML Kit's notifications
@@ -107,8 +107,21 @@
             return;
         NSError *error = note.userInfo[MLKModelDownloadUserInfoKeyError];
         cleanup();
-        finish(error.localizedDescription.length ? error.localizedDescription : @"Download failed");
+        finish([self describeError:error]);
     }];
+}
+
+// ML Kit's message plus what's behind it (HTTP status, network error)
++ (NSString *)describeError:(NSError *)error {
+    NSMutableString *text = [NSMutableString stringWithString:error.localizedDescription.length ? error.localizedDescription : @"Download failed"];
+    for (NSString *key in error.userInfo) {
+        if ([key isKindOfClass:[NSString class]] && [key rangeOfString:@"HttpStatus" options:NSCaseInsensitiveSearch].location != NSNotFound)
+            [text appendFormat:@" (HTTP %@)", error.userInfo[key]];
+    }
+    NSError *underlying = error.userInfo[NSUnderlyingErrorKey];
+    if (underlying.localizedDescription.length)
+        [text appendFormat:@"\n%@ (%@ %ld)", underlying.localizedDescription, underlying.domain, (long)underlying.code];
+    return text;
 }
 
 + (void)deleteLanguage:(NSString *)language completion:(void (^)(NSString *))completion {

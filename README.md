@@ -19,6 +19,7 @@
 
 ### Downloads
 - **Full playlists and albums** in one tap: one folder per playlist, track numbers follow the playlist order, songs that are already downloaded are skipped, and the numbering is updated when the playlist order changes
+- **Step-by-step progress box** in the Downloads tab's style (black with OLED Dark Theme): checking the songs you already have and their order, downloading, lyrics, then cover & info, each with its own progress. **Stop** ends everything right away and keeps the songs saved so far
 - **Single songs** as `.m4a` (original quality, no re-encoding) or `.mp3` (LAME)
 - **Complete tags**: title, artist, album, album artist, track number, embedded cover art, plus `cover.png`, creator and description for every playlist
 - **Lyrics** are part of every song, playlist and album download: saved as `.lrc` files in a `Lyrics` folder inside the playlist / album folder (single songs: `YTMusicUltimate/Lyrics`), so they work offline right away. Updating a playlist or album checks every song's lyrics again with a progress box (new ones added, changed ones replaced, wrong ones removed). YouTube Music's own synced lyrics, cross-checked with [LRCLIB](https://lrclib.net) (instrumentals stay without lyrics)
