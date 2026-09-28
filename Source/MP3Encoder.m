@@ -97,6 +97,30 @@ static NSData *YTMUID3Tag(NSDictionary<NSString *, NSString *> *metadata, NSData
 
 @implementation YTMUMP3Encoder
 
++ (BOOL)replaceTagsInFile:(NSURL *)mp3URL
+                 metadata:(NSDictionary<NSString *, NSString *> *)metadata
+                coverJPEG:(NSData *)coverJPEG {
+    NSData *file = [NSData dataWithContentsOfURL:mp3URL options:NSDataReadingMappedIfSafe error:nil];
+    if (file.length < 16)
+        return NO;
+    const uint8_t *bytes = file.bytes;
+    NSUInteger audioStart = 0;
+    // Existing ID3v2 tags at the start (can be more than one): skipped
+    while (audioStart + 10 <= file.length && memcmp(bytes + audioStart, "ID3", 3) == 0) {
+        const uint8_t *header = bytes + audioStart;
+        if ((header[6] | header[7] | header[8] | header[9]) & 0x80)
+            return NO; // not a valid synchsafe size: leave the file alone
+        NSUInteger size = ((NSUInteger)header[6] << 21) | ((NSUInteger)header[7] << 14) | ((NSUInteger)header[8] << 7) | header[9];
+        NSUInteger total = 10 + size + ((header[5] & 0x10) ? 10 : 0);
+        if (audioStart + total > file.length)
+            return NO;
+        audioStart += total;
+    }
+    NSMutableData *result = [YTMUID3Tag(metadata, coverJPEG) mutableCopy];
+    [result appendData:[file subdataWithRange:NSMakeRange(audioStart, file.length - audioStart)]];
+    return [result writeToURL:mp3URL atomically:YES];
+}
+
 + (NSString *)convertFile:(NSURL *)inputURL
                     toMP3:(NSURL *)outputURL
                  metadata:(NSDictionary<NSString *, NSString *> *)metadata

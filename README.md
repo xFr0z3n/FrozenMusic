@@ -20,7 +20,8 @@
 
 ### Downloads
 - Playlists and albums in a single step, saved to one folder each with track numbers matching the playlist order
-- Updating a playlist or album keeps the folder identical to the current list: new songs are downloaded, moved songs are renumbered, removed songs are deleted, and all lyrics are checked again. Songs that are no longer playable are skipped
+- Updating a playlist or album keeps the folder identical to the current list: new songs are downloaded, moved songs are renumbered, removed songs are deleted, changed titles, artists and album names are written to the tags, and all lyrics are checked again. Songs that are no longer playable are skipped, and a renamed playlist keeps its folder
+- Names are kept exactly as on YouTube Music, including characters such as `/` or `:` (stored as look-alike characters in file names)
 - Songs are saved while the player moves on to the next one, with cover art and MP3 conversion processed alongside; lyrics are fetched once every song has been saved
 - Progress is shown step by step (checking songs, downloading, lyrics, cover and info). The download and lyrics steps can be skipped, and a download can be stopped at any time
 - Single songs as `.m4a` (original stream, no re-encoding) or `.mp3` (LAME, ~190 kbps)
