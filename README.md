@@ -30,6 +30,7 @@
 ### Lyrics
 - Downloaded with every song and stored as `.lrc` files in a `Lyrics` folder next to the audio files. Songs without lyrics are recorded as such, so the lyrics screen opens instantly
 - Time-synced lyrics from YouTube Music, cross-checked with [LRCLIB](https://lrclib.net), which also serves as a fallback
+- Lyrics already saved for the same song in another playlist or album are reused, and lyrics without timing are replaced as soon as a synced version is found
 - Lyrics screen modeled on YouTube Music's: blurred cover background, current line highlighted, tap a line to seek
 - Share selected lines as text
 - Translation through Google when online and on-device ML Kit models when offline; languages are managed under **FrozenMusic → Offline translation**

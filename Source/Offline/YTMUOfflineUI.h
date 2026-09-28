@@ -39,6 +39,7 @@ FOUNDATION_EXPORT NSArray<NSURL *> *YTMUApplySavedOrder(NSArray<NSURL *> *urls, 
 FOUNDATION_EXPORT void YTMUSaveOrder(NSArray<NSURL *> *urls, NSString *key);
 FOUNDATION_EXPORT NSString *YTMUTrackOrderKey(NSURL *folder); // songs of a folder ("collections" = folders)
 FOUNDATION_EXPORT void YTMUClearSavedOrder(NSString *key); // back to the natural order
+FOUNDATION_EXPORT void YTMURenameInSavedOrder(NSString *key, NSString *oldName, NSString *newName); // keeps an item's place
 
 #pragma mark - Shared helpers
 

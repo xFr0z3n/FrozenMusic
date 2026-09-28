@@ -335,24 +335,79 @@ static NSString *YTMUMatchKey(NSString *text) {
     return key;
 }
 
-// An LRCLIB entry really is this song: same title, same artist, same length (±4 s when known)
+// Artist names of a credit: "A, B & C feat. D" -> the keys of A, B, C, D
+static NSArray<NSString *> *YTMUArtistKeys(NSString *artist) {
+    NSString *lower = artist.lowercaseString ?: @"";
+    lower = [lower stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+    NSString *unified = [lower stringByReplacingOccurrencesOfString:@"\\s+(feat\\.?|ft\\.?|featuring|with|x|and|vs\\.?)\\s+|\\s*[,&/;+×]\\s*" withString:@"\n" options:NSRegularExpressionSearch range:NSMakeRange(0, lower.length)];
+    NSArray<NSString *> *parts = [unified componentsSeparatedByString:@"\n"];
+    NSMutableArray<NSString *> *keys = [NSMutableArray array];
+    for (NSString *part in parts) {
+        NSString *key = YTMUMatchKey(part);
+        if (key.length >= 2)
+            [keys addObject:key];
+    }
+    return keys;
+}
+
+// An LRCLIB entry really is this song: same title (or one containing the other when the length
+// confirms it), one of the artists in common, same length (±4 s when known)
 static BOOL YTMULRCLIBMatches(NSDictionary *entry, NSString *title, NSString *artist, NSTimeInterval duration) {
     if (![entry isKindOfClass:[NSDictionary class]])
         return NO;
     NSString *entryTitle = [entry[@"trackName"] isKindOfClass:[NSString class]] ? entry[@"trackName"] : @"";
     NSString *entryArtist = [entry[@"artistName"] isKindOfClass:[NSString class]] ? entry[@"artistName"] : @"";
-    NSString *wantedTitle = YTMUMatchKey(title), *wantedArtist = YTMUMatchKey(artist);
-    if (!wantedTitle.length || ![YTMUMatchKey(entryTitle) isEqualToString:wantedTitle])
+    NSString *wantedTitle = YTMUMatchKey(title), *foundTitle = YTMUMatchKey(entryTitle);
+    if (!wantedTitle.length || !foundTitle.length)
         return NO;
-    if (wantedArtist.length) {
+    id length = entry[@"duration"];
+    BOOL lengthKnown = duration > 0 && [length respondsToSelector:@selector(doubleValue)] && [length doubleValue] > 0;
+    if (lengthKnown && fabs([length doubleValue] - duration) > 4)
+        return NO;
+    BOOL sameTitle = [foundTitle isEqualToString:wantedTitle];
+    if (!sameTitle && lengthKnown && MIN(foundTitle.length, wantedTitle.length) >= 4)
+        sameTitle = [foundTitle containsString:wantedTitle] || [wantedTitle containsString:foundTitle];
+    if (!sameTitle)
+        return NO;
+    NSArray<NSString *> *wantedArtists = YTMUArtistKeys(artist);
+    if (wantedArtists.count) {
         NSString *foundArtist = YTMUMatchKey(entryArtist);
-        if (!foundArtist.length || (![foundArtist containsString:wantedArtist] && ![wantedArtist containsString:foundArtist]))
+        BOOL shared = NO;
+        for (NSString *key in wantedArtists) {
+            if (foundArtist.length && ([foundArtist containsString:key] || [key containsString:foundArtist])) {
+                shared = YES;
+                break;
+            }
+        }
+        if (!shared)
             return NO;
     }
-    id length = entry[@"duration"];
-    if (duration > 0 && [length respondsToSelector:@selector(doubleValue)] && fabs([length doubleValue] - duration) > 4)
-        return NO;
     return YES;
+}
+
+// A song's name in a video title: "Artist - Song (Official Video) [4K]" -> "Song"
+static NSString *YTMUSongTitle(NSString *title, NSString *artist) {
+    NSString *t = title ?: @"";
+    t = [t stringByReplacingOccurrencesOfString:@"\\s*[\\(\\[【][^\\)\\]】]*(official|video|audio|lyric|visuali[sz]er|m/?v|hd|4k|explicit)[^\\)\\]】]*[\\)\\]】]"
+                                     withString:@"" options:NSRegularExpressionSearch | NSCaseInsensitiveSearch range:NSMakeRange(0, t.length)];
+    NSRange dash = [t rangeOfString:@" - "];
+    if (dash.location != NSNotFound && artist.length) {
+        NSString *before = YTMUMatchKey([t substringToIndex:dash.location]), *credit = YTMUMatchKey(artist);
+        if (before.length && credit.length && ([credit containsString:before] || [before containsString:credit]))
+            t = [t substringFromIndex:NSMaxRange(dash)];
+    }
+    t = [t stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return t.length ? t : (title ?: @"");
+}
+
+// "Artist - Topic" / "ArtistVEVO" -> "Artist"
+static NSString *YTMUSongArtist(NSString *artist) {
+    NSString *a = artist ?: @"";
+    if ([a hasSuffix:@" - Topic"])
+        a = [a substringToIndex:a.length - 8];
+    if (a.length > 4 && [a hasSuffix:@"VEVO"])
+        a = [a substringToIndex:a.length - 4];
+    return [a stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
 
 // *instrumental: LRCLIB knows this song has no words
@@ -417,6 +472,15 @@ static YTMULyrics *YTMUFetchLyrics(NSString *videoID, NSString *title, NSString 
         return ytm;
     }
     YTMULyrics *lrclib = title.length ? YTMUFetchLRCLIB(title, artist, duration, &lrclibOffline, &instrumental) : nil;
+    // Video titles / channel names ("Artist - Song (Official Video)", "Artist - Topic"): the song's own
+    NSString *songTitle = YTMUSongTitle(title, artist), *songArtist = YTMUSongArtist(artist);
+    if (!lrclib.synced && !instrumental && songTitle.length && (![songTitle isEqualToString:title] || ![songArtist isEqualToString:artist ?: @""])) {
+        BOOL again = NO;
+        YTMULyrics *other = YTMUFetchLRCLIB(songTitle, songArtist, duration, &again, &instrumental);
+        if (other && (other.synced || !lrclib))
+            lrclib = other;
+        lrclibOffline = lrclibOffline && again;
+    }
     YTMULyrics *lyrics = nil;
     if (instrumental)
         lyrics = nil;
@@ -523,7 +587,8 @@ static YTMULyrics *YTMULyricsFromFileText(NSString *text) {
 
 // A song that was checked and has no lyrics gets a file with only this tag, so the lyrics
 // button answers right away instead of asking again every time
-static NSString *const YTMUNoLyricsTag = @"[lyrics:none]";
+// (v2: markers of the first version are checked once more with the better lookup)
+static NSString *const YTMUNoLyricsTag = @"[lyrics:none:2]";
 
 static NSString *YTMULyricsFileContents(NSURL *audioURL) {
     NSURL *file = YTMULyricsFileForAudio(audioURL);
@@ -612,6 +677,102 @@ static NSTimeInterval YTMUAudioDuration(NSURL *audioURL) {
     return file && file.fileFormat.sampleRate > 0 ? (NSTimeInterval)file.length / file.fileFormat.sampleRate : 0;
 }
 
+// Lyrics saved for the same song somewhere else in YTMusicUltimate (another playlist, album or a
+// single download): title (and one artist) the same. Synced ones preferred. The list of saved
+// lyrics is read once and kept for a minute (a whole playlist asks one after another).
+static YTMULyrics *YTMULyricsFromLibrary(NSURL *audioURL, NSString *title, NSString *artist) {
+    NSString *titleKey = YTMUMatchKey(YTMUSongTitle(title, artist));
+    if (titleKey.length < 2)
+        return nil;
+    NSURL *root = nil;
+    for (NSURL *folder = audioURL.URLByDeletingLastPathComponent; folder.path.length > 1; folder = folder.URLByDeletingLastPathComponent) {
+        if ([folder.lastPathComponent isEqualToString:@"YTMusicUltimate"]) {
+            root = folder;
+            break;
+        }
+    }
+    if (!root)
+        return nil;
+
+    static NSMutableDictionary<NSString *, NSMutableArray<NSDictionary *> *> *byTitle;
+    static NSDate *builtAt;
+    static NSString *builtFor;
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        lock = [NSObject new];
+    });
+    NSArray<NSDictionary *> *candidates;
+    @synchronized (lock) {
+        if (!byTitle || ![builtFor isEqualToString:root.path] || [builtAt timeIntervalSinceNow] < -60) {
+            byTitle = [NSMutableDictionary dictionary];
+            NSFileManager *fm = [NSFileManager defaultManager];
+            NSMutableArray<NSURL *> *lyricsFolders = [NSMutableArray arrayWithObject:[root URLByAppendingPathComponent:@"Lyrics"]];
+            for (NSURL *folder in [fm contentsOfDirectoryAtURL:root includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles error:nil])
+                [lyricsFolders addObject:[folder URLByAppendingPathComponent:@"Lyrics"]];
+            NSRegularExpression *tag = [NSRegularExpression regularExpressionWithPattern:@"^\\[(ti|ar):(.*)\\]\\s*$" options:NSRegularExpressionAnchorsMatchLines error:nil];
+            for (NSURL *folder in lyricsFolders) {
+                for (NSURL *file in [fm contentsOfDirectoryAtURL:folder includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles error:nil]) {
+                    if (![file.pathExtension.lowercaseString isEqualToString:@"lrc"])
+                        continue;
+                    NSString *text = [NSString stringWithContentsOfURL:file encoding:NSUTF8StringEncoding error:nil];
+                    if (!text.length || YTMUIsNoLyricsText(text))
+                        continue;
+                    NSString *fileTitle = nil, *fileArtist = @"";
+                    for (NSTextCheckingResult *match in [tag matchesInString:text options:0 range:NSMakeRange(0, MIN(text.length, (NSUInteger)2000))]) {
+                        NSString *name = [text substringWithRange:[match rangeAtIndex:1]];
+                        NSString *value = [text substringWithRange:[match rangeAtIndex:2]];
+                        if ([name isEqualToString:@"ti"])
+                            fileTitle = value;
+                        else
+                            fileArtist = value;
+                    }
+                    NSString *key = YTMUMatchKey(YTMUSongTitle(fileTitle, fileArtist));
+                    if (key.length < 2)
+                        continue;
+                    BOOL synced = [text rangeOfString:@"^\\[\\d+:\\d+" options:NSRegularExpressionSearch].location != NSNotFound ||
+                                  [text rangeOfString:@"\n\\[\\d+:\\d+" options:NSRegularExpressionSearch].location != NSNotFound;
+                    if (!byTitle[key])
+                        byTitle[key] = [NSMutableArray array];
+                    [byTitle[key] addObject:@{@"path": file.path, @"artist": fileArtist, @"synced": @(synced)}];
+                }
+            }
+            builtAt = [NSDate date];
+            builtFor = root.path;
+        }
+        candidates = [byTitle[titleKey] copy];
+    }
+
+    NSString *own = YTMULyricsFileForAudio(audioURL).path;
+    NSArray<NSString *> *artists = YTMUArtistKeys(YTMUSongArtist(artist));
+    YTMULyrics *plain = nil;
+    for (NSDictionary *candidate in candidates) {
+        if ([candidate[@"path"] isEqualToString:own])
+            continue;
+        NSArray<NSString *> *theirs = YTMUArtistKeys(YTMUSongArtist(candidate[@"artist"]));
+        if (artists.count && theirs.count) {
+            BOOL shared = NO;
+            for (NSString *a in artists) {
+                for (NSString *b in theirs) {
+                    if ([a containsString:b] || [b containsString:a])
+                        shared = YES;
+                }
+            }
+            if (!shared)
+                continue;
+        }
+        NSString *text = [NSString stringWithContentsOfFile:candidate[@"path"] encoding:NSUTF8StringEncoding error:nil];
+        YTMULyrics *lyrics = text.length ? YTMULyricsFromFileText(text) : nil;
+        if (!lyrics.lines.count)
+            continue;
+        if (lyrics.synced)
+            return lyrics;
+        if (!plain)
+            plain = lyrics;
+    }
+    return plain;
+}
+
 // Lyrics file of a song. refresh NO: the saved file, else moved over from an earlier version,
 // else fetched. refresh YES (downloads / updates): asked again, the file is replaced with the
 // newest lyrics or removed when the song has none; kept when it can't be checked right now.
@@ -631,6 +792,17 @@ static YTMULyrics *YTMUEnsureLyricsFile(NSURL *audioURL, NSString *videoID, NSSt
         lyrics = YTMULegacyLyrics(videoID, title, artist) ?: YTMUEmbeddedLyrics(audioURL);
     if (!lyrics)
         lyrics = YTMUFetchLyrics(videoID, title, artist, duration, &noNetwork);
+    // Not found online, or only without timing: the same song saved elsewhere (album / playlist)
+    if (!lyrics.synced) {
+        YTMULyrics *elsewhere = YTMULyricsFromLibrary(audioURL, title, artist);
+        if (elsewhere && (elsewhere.synced || !lyrics)) {
+            lyrics = elsewhere;
+            noNetwork = NO;
+        }
+    }
+    // A synced version already saved stays over one without timing
+    if (saved.synced && lyrics && !lyrics.synced)
+        lyrics = saved;
 
     if (lyrics) {
         YTMUWriteLyricsFile(audioURL, lyrics, title, artist);
@@ -704,6 +876,44 @@ void YTMUPrefetchLyricsForSong(NSURL *audioURL, NSString *videoID, NSString *tit
 
 + (YTMULyrics *)savedLyricsForTrack:(YTMUOfflineTrack *)track {
     return YTMUReadLyricsFile(track.url);
+}
+
++ (void)findSyncedVersionForTrack:(YTMUOfflineTrack *)track completion:(void (^)(YTMULyrics *))completion {
+    NSURL *url = track.url;
+    if (!url)
+        return;
+    static NSMutableSet<NSString *> *asked;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        asked = [NSMutableSet set];
+    });
+    @synchronized (asked) {
+        if ([asked containsObject:url.path])
+            return;
+        [asked addObject:url.path];
+    }
+    NSString *videoID = track.videoID, *title = track.title, *artist = track.artist;
+    NSTimeInterval duration = track.duration;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        YTMULyrics *saved = YTMUReadLyricsFile(url);
+        if (saved.synced) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(saved);
+            });
+            return;
+        }
+        NSTimeInterval length = duration > 0 ? duration : YTMUAudioDuration(url);
+        BOOL offline = NO;
+        YTMULyrics *lyrics = YTMUFetchLyrics(videoID, title, artist, length, &offline);
+        if (!lyrics.synced)
+            lyrics = YTMULyricsFromLibrary(url, title, artist);
+        if (!lyrics.synced)
+            return;
+        YTMUWriteLyricsFile(url, lyrics, title, artist);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(lyrics);
+        });
+    });
 }
 
 + (BOOL)isKnownWithoutLyrics:(YTMUOfflineTrack *)track {

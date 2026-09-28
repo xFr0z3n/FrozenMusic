@@ -8,7 +8,7 @@
 // Songs already downloaded (tracked by video ID) are skipped; if a song moved
 // in the playlist, its file is renamed and its track number updated.
 // Implemented in Downloading.x: finds the stream of `videoID` around the player.
-// Returns @{@"hls": ..., @"author": ...} or @{@"diag": ...}
+// Returns @{@"hls" or @"audio" (direct stream), @"author", @"title"} or @{@"diag": ...}
 FOUNDATION_EXPORT NSDictionary *YTMUStreamInfoForVideo(NSArray *startObjects, NSString *videoID);
 // Implemented in Downloading.x: the lock-screen info (title, artist, albumTitle) of the current song
 FOUNDATION_EXPORT NSDictionary *YTMUCurrentNowPlayingInfo(void);
