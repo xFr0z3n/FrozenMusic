@@ -443,6 +443,10 @@ void YTMUSaveOrder(NSArray<NSURL *> *urls, NSString *key) {
     [[NSUserDefaults standardUserDefaults] setObject:[urls valueForKey:@"lastPathComponent"] forKey:YTMUOrderDefaultsKey(key)];
 }
 
+void YTMUClearSavedOrder(NSString *key) {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:YTMUOrderDefaultsKey(key)];
+}
+
 NSString *YTMUTrackOrderKey(NSURL *folder) {
     return [@"tracks:" stringByAppendingString:folder.lastPathComponent ?: @""];
 }
