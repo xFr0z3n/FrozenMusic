@@ -1133,7 +1133,7 @@ static UIImage *YTMUTopBarIcon(NSString *name) {
     textView.font = [UIFont systemFontOfSize:14.0];
 
     YTAlertView *alertView = [NSClassFromString(@"YTAlertView") confirmationDialogWithAction:^{
-        NSString *newName = [textView.text stringByReplacingOccurrencesOfString:@"/" withString:@""];
+        NSString *newName = [textView.text stringByReplacingOccurrencesOfString:@"/" withString:@"∕"]; // "/" can't be in a file name: look-alike
         if (newName.length == 0)
             return;
         NSURL *folder = [audioURL URLByDeletingLastPathComponent];

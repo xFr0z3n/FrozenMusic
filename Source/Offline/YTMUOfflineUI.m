@@ -453,6 +453,21 @@ NSString *YTMUTrackOrderKey(NSURL *folder) {
 
 #pragma mark - Collection model
 
+// Letters and digits of a name (any script, no accents / widths), for comparing names
+// whatever punctuation they have
+static NSString *YTMUNameKey(NSString *text) {
+    if (!text.length)
+        return @"";
+    NSString *folded = [text stringByFoldingWithOptions:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch | NSWidthInsensitiveSearch locale:nil];
+    NSMutableString *key = [NSMutableString stringWithCapacity:folded.length];
+    NSCharacterSet *alnum = [NSCharacterSet alphanumericCharacterSet];
+    [folded enumerateSubstringsInRange:NSMakeRange(0, folded.length) options:NSStringEnumerationByComposedCharacterSequences usingBlock:^(NSString *character, NSRange range, NSRange enclosing, BOOL *stop) {
+        if ([character rangeOfCharacterFromSet:alnum].location != NSNotFound)
+            [key appendString:character];
+    }];
+    return key;
+}
+
 @implementation YTMUCollection
 
 + (NSArray<NSURL *> *)audioFilesInFolder:(NSURL *)folder {
@@ -501,7 +516,9 @@ NSString *YTMUTrackOrderKey(NSURL *folder) {
 
         // First song tells us album vs playlist (playlists: album artist = playlist name)
         YTMUOfflineTrack *first = [YTMUOfflineTrack trackWithURL:files.firstObject fallbackArtwork:nil];
-        BOOL albumArtistIsName = first.albumArtist && [first.albumArtist caseInsensitiveCompare:collection.name] == NSOrderedSame;
+        // (folder names have look-alikes for "/" etc. or, from earlier versions, lack them)
+        BOOL albumArtistIsName = first.albumArtist && ([first.albumArtist caseInsensitiveCompare:collection.name] == NSOrderedSame ||
+                                                       [YTMUNameKey(first.albumArtist) isEqualToString:YTMUNameKey(collection.name)]);
         collection.isAlbum = first.albumArtist.length && !albumArtistIsName;
         collection.artist = collection.isAlbum ? first.albumArtist : nil;
         collection.year = collection.isAlbum ? first.year : nil;

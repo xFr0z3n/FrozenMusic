@@ -10,4 +10,8 @@
                     toMP3:(NSURL *)outputURL
                  metadata:(NSDictionary<NSString *, NSString *> *)metadata
                 coverJPEG:(NSData *)coverJPEG;
+// Replaces the ID3 tag of an existing MP3 (audio untouched). NO if the file couldn't be written.
++ (BOOL)replaceTagsInFile:(NSURL *)mp3URL
+                 metadata:(NSDictionary<NSString *, NSString *> *)metadata
+                coverJPEG:(NSData *)coverJPEG;
 @end

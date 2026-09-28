@@ -580,11 +580,19 @@ static NSString *YTMUPlaylistBrowseID(UIView *view) {
 
 #pragma mark - Metadata helpers
 
+// Characters files can't (or shouldn't) have become look-alikes: "AC/DC" -> "AC∕DC"
 static NSString *YTMUCleanFileName(NSString *name) {
-    NSCharacterSet *bad = [NSCharacterSet characterSetWithCharactersInString:@"/\\:?*\"<>|"];
-    NSString *clean = [[name componentsSeparatedByCharactersInSet:bad] componentsJoinedByString:@""];
-    clean = [clean stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    return clean.length > 0 ? clean : @"Unknown";
+    NSDictionary<NSString *, NSString *> *lookalikes = @{@"/": @"∕", @"\\": @"⧵", @":": @"꞉", @"?": @"？", @"*": @"＊",
+                                                         @"\"": @"＂", @"<": @"＜", @">": @"＞", @"|": @"｜"};
+    NSMutableString *clean = [NSMutableString stringWithCapacity:name.length];
+    [name enumerateSubstringsInRange:NSMakeRange(0, name.length) options:NSStringEnumerationByComposedCharacterSequences usingBlock:^(NSString *character, NSRange range, NSRange enclosing, BOOL *stop) {
+        if ([character rangeOfCharacterFromSet:[NSCharacterSet controlCharacterSet]].location == NSNotFound)
+            [clean appendString:lookalikes[character] ?: character];
+    }];
+    NSString *trimmed = [clean stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    while ([trimmed hasPrefix:@"."])
+        trimmed = [trimmed substringFromIndex:1];
+    return trimmed.length > 0 ? trimmed : @"Unknown";
 }
 
 static NSString *YTMUCleanArtist(NSString *artist) {
