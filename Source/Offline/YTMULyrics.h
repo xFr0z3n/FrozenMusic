@@ -22,6 +22,8 @@
 // Saved lyrics, else fetched (online) and saved. nil = none available. Completion on the main queue.
 + (void)loadForTrack:(YTMUOfflineTrack *)track completion:(void (^)(YTMULyrics *lyrics, BOOL offline))completion;
 + (YTMULyrics *)savedLyricsForTrack:(YTMUOfflineTrack *)track;
+// Checked before and has no lyrics (answers without asking again)
++ (BOOL)isKnownWithoutLyrics:(YTMUOfflineTrack *)track;
 
 // Language the lyrics are in (nil if unsure) and the device language
 - (NSString *)languageCode;
