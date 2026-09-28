@@ -419,16 +419,33 @@ static NSString *YTMUOrderDefaultsKey(NSString *key) {
     return [@"YTMUOrder:" stringByAppendingString:key];
 }
 
+static NSString *YTMUNameKey(NSString *text);
+
 NSArray<NSURL *> *YTMUApplySavedOrder(NSArray<NSURL *> *urls, NSString *key) {
     NSArray<NSString *> *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:YTMUOrderDefaultsKey(key)];
     if (saved.count == 0)
         return urls;
     NSMutableDictionary<NSString *, NSNumber *> *position = [NSMutableDictionary dictionary];
-    for (NSUInteger i = 0; i < saved.count; i++)
+    NSMutableDictionary<NSString *, NSNumber *> *positionByKey = [NSMutableDictionary dictionary];
+    for (NSUInteger i = 0; i < saved.count; i++) {
+        if (![saved[i] isKindOfClass:[NSString class]])
+            continue;
         position[saved[i]] = @(i);
+        NSString *key = YTMUNameKey(saved[i]);
+        if (key.length && !positionByKey[key])
+            positionByKey[key] = @(i);
+    }
+    // A name that changed only in punctuation (e.g. "/" now kept as a look-alike) keeps its place
+    NSMutableDictionary<NSString *, NSNumber *> *place = [NSMutableDictionary dictionary];
+    for (NSURL *url in urls) {
+        NSString *name = url.lastPathComponent;
+        NSNumber *found = position[name] ?: positionByKey[YTMUNameKey(name)];
+        if (found)
+            place[name] = found;
+    }
     // Saved ones in their order, new ones (not in the list) keep their place at the top
     return [urls sortedArrayWithOptions:NSSortStable usingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
-        NSNumber *pa = position[a.lastPathComponent], *pb = position[b.lastPathComponent];
+        NSNumber *pa = place[a.lastPathComponent], *pb = place[b.lastPathComponent];
         if (!pa && !pb)
             return NSOrderedSame;
         if (!pa)
@@ -441,6 +458,17 @@ NSArray<NSURL *> *YTMUApplySavedOrder(NSArray<NSURL *> *urls, NSString *key) {
 
 void YTMUSaveOrder(NSArray<NSURL *> *urls, NSString *key) {
     [[NSUserDefaults standardUserDefaults] setObject:[urls valueForKey:@"lastPathComponent"] forKey:YTMUOrderDefaultsKey(key)];
+}
+
+void YTMURenameInSavedOrder(NSString *key, NSString *oldName, NSString *newName) {
+    NSMutableArray<NSString *> *saved = [[[NSUserDefaults standardUserDefaults] arrayForKey:YTMUOrderDefaultsKey(key)] mutableCopy];
+    NSUInteger index = oldName ? [saved indexOfObject:oldName] : NSNotFound;
+    if (index == NSNotFound || !newName.length)
+        return;
+    [saved removeObject:newName];
+    index = [saved indexOfObject:oldName];
+    saved[index] = newName;
+    [[NSUserDefaults standardUserDefaults] setObject:saved forKey:YTMUOrderDefaultsKey(key)];
 }
 
 void YTMUClearSavedOrder(NSString *key) {

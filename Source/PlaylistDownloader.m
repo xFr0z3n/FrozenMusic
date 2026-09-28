@@ -1125,7 +1125,8 @@ static BOOL YTMUPatchMP3TrackNumber(NSURL *fileURL, NSInteger position) {
         }
     }
     if (previous && [fm moveItemAtURL:previous toURL:folder error:nil]) {
-        // The Downloads tab's saved order follows the folder
+        // The Downloads tab keeps the list where you put it
+        YTMURenameInSavedOrder(@"collections", previous.lastPathComponent, folder.lastPathComponent);
         YTMUClearSavedOrder(YTMUTrackOrderKey(previous));
     }
     return folder;
@@ -1785,8 +1786,9 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
     [starts addObject:player];
     NSDictionary *info = YTMUStreamInfoForVideo(starts, videoID);
     NSString *hls = [info[@"hls"] isKindOfClass:[NSString class]] ? info[@"hls"] : nil;
+    NSString *direct = [info[@"audio"] isKindOfClass:[NSString class]] ? info[@"audio"] : nil; // no HLS: direct stream
 
-    if (!hls.length && attempt < 8) {
+    if (!hls.length && !direct.length && attempt < 8) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self capturePlayer:player video:video attempt:attempt + 1];
         });
@@ -1828,7 +1830,7 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
     self.strayCount = 0;
     [self.lapSeen removeAllObjects]; // a new song: the lap starts over
 
-    if (!hls.length) {
+    if (!hls.length && !direct.length) {
         self.lastCapturedID = videoID;
         [self.pending removeObjectForKey:track.videoID];
         [self.pendingByTitle removeObjectForKey:YTMUTitleKey(track.title)];
@@ -1865,7 +1867,7 @@ static NSString *YTMUTitleOfFileName(NSString *fileName) {
 
     // Up to 3 songs download at the same time while the player moves on
     [self.downloadOps addOperationWithBlock:^{
-        [self downloadTrack:track hlsManifest:hls author:author];
+        [self downloadTrack:track hlsManifest:hls directAudio:direct author:author];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.queuedCount--;
             [self updateStatus];
@@ -2239,13 +2241,15 @@ static NSString *YTMUTagText(NSString *text) {
 
 // Download queue (several at once): download, tags + cover, into the folder.
 // Lyrics follow separately so they don't hold up the next song.
-- (void)downloadTrack:(YTMUPlaylistTrack *)track hlsManifest:(NSString *)hls author:(NSString *)author {
+- (void)downloadTrack:(YTMUPlaylistTrack *)track hlsManifest:(NSString *)hls directAudio:(NSString *)direct author:(NSString *)author {
     if (self.cancelled)
         return;
 
     NSFileManager *fm = [NSFileManager defaultManager];
 
-    NSString *audioURL = YTMUAudioURLFromManifest(YTMUGet(hls)) ?: YTMUAudioURLFromManifest(YTMUGet(hls));
+    NSString *audioURL = direct;
+    if (!audioURL.length && hls.length)
+        audioURL = YTMUAudioURLFromManifest(YTMUGet(hls)) ?: YTMUAudioURLFromManifest(YTMUGet(hls));
     if (!audioURL) {
         [self addFailure:[NSString stringWithFormat:@"%ld. %@ (no audio in stream)", (long)track.position, track.title]];
         return;

@@ -1,6 +1,7 @@
 #import "FFMpegDownloader.h"
 #import "MP3Encoder.h"
 #import "Offline/YTMULyrics.h"
+#import "Offline/YTMUDownloadPanel.h"
 
 // iTunes-style JPEG data type (value of kCMMetadataBaseDataType_JPEG),
 // written as a literal so CoreMedia doesn't have to be linked
@@ -26,9 +27,22 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
     [MobileFFmpegConfig resetStatistics];
     [self setActive];
 
-    self.hud = [MBProgressHUD showHUDAddedTo:[UIApplication sharedApplication].keyWindow animated:YES];
-    self.hud.mode = MBProgressHUDModeAnnularDeterminate;
-    self.hud.label.text = LOC(@"DOWNLOADING");
+    YTMUDownloadPanel *panel = [YTMUDownloadPanel showCentered];
+    panel.step = LOC(@"DOWNLOADING");
+    panel.title = self.mediaName;
+    panel.details = @"0%";
+    panel.progress = 0;
+    __weak __typeof(self) weakSelf = self;
+    panel.buttons = @[
+        [YTMUPanelButton buttonWithTitle:LOC(@"CANCEL") style:YTMUPanelButtonSecondary handler:^{
+            [weakSelf cancelDownloading:nil];
+        }],
+        // Keeps downloading, the result shows up when it's done
+        [YTMUPanelButton buttonWithTitle:@"Hide" style:YTMUPanelButtonPlain handler:^{
+            [weakSelf.panel dismiss];
+        }],
+    ];
+    self.panel = panel;
 
     NSFileManager *fm = [NSFileManager defaultManager];
     NSURL *documentsURL = [[fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask] lastObject];
@@ -58,18 +72,17 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
 
         dispatch_async(dispatch_get_main_queue(), ^{
             if (returnCode == RETURN_CODE_SUCCESS) {
-                if (self.hud.mode == MBProgressHUDModeAnnularDeterminate) {
-                    self.hud.progress = 1.0f;
-                    self.hud.detailsLabel.text = @"100%";
-                }
+                self.panel.progress = 1.0f;
+                self.panel.details = @"100%";
 
                 void (^finish)(BOOL) = ^(BOOL saved) {
                     [fm removeItemAtURL:rawURL error:nil];
                     [fm removeItemAtURL:taggedURL error:nil];
                     if (saved) {
                         // Lyrics into YTMusicUltimate/Lyrics, before "Done" (then they work offline right away)
-                        self.hud.mode = MBProgressHUDModeIndeterminate;
-                        self.hud.detailsLabel.text = @"Lyrics…";
+                        self.panel.progress = -1;
+                        self.panel.details = @"Lyrics…";
+                        self.panel.buttons = @[];
                         NSString *videoID = self.videoID, *title = metadata[@"title"], *artist = metadata[@"artist"];
                         NSTimeInterval duration = self.duration;
                         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -87,8 +100,9 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
 
                 if (wantsMP3) {
                     // LAME + ID3 tags with the cover inside the file
-                    self.hud.mode = MBProgressHUDModeIndeterminate;
-                    self.hud.detailsLabel.text = @"MP3…";
+                    self.panel.progress = -1;
+                    self.panel.details = @"Converting to MP3…";
+                    self.panel.buttons = @[];
                     UIImage *coverImage = coverData.length ? [UIImage imageWithData:coverData] : nil;
                     NSData *jpeg = coverImage ? UIImageJPEGRepresentation(coverImage, 0.92) : nil;
                     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -113,7 +127,7 @@ static NSString *const YTMUJPEGDataType = @"com.apple.metadata.datatype.JPEG";
                     finish([fm moveItemAtURL:finishedURL toURL:outputURL error:nil]);
                 }];
             } else if (returnCode == RETURN_CODE_CANCEL) {
-                [self.hud hideAnimated:YES];
+                [self.panel dismiss];
                 [fm removeItemAtURL:rawURL error:nil];
             } else {
                 [self showResultWithText:LOC(@"OOPS") icon:@"xmark" delay:3.0];
@@ -314,21 +328,9 @@ static NSUInteger YTMUFindBox(const uint8_t *bytes, NSUInteger start, NSUInteger
 }
 
 - (void)showResultWithText:(NSString *)text icon:(NSString *)iconName delay:(NSTimeInterval)delay {
-    if (!self.hud)
-        self.hud = [MBProgressHUD showHUDAddedTo:[UIApplication sharedApplication].keyWindow animated:YES];
-
-    self.hud.mode = MBProgressHUDModeCustomView;
-    self.hud.label.text = text;
-    self.hud.label.numberOfLines = 0;
-    self.hud.detailsLabel.text = nil;
-    [self.hud.button setTitle:nil forState:UIControlStateNormal];
-    [[self.hud.button.superview viewWithTag:998] removeFromSuperview];
-
-    UIImageView *iconView = [[UIImageView alloc] initWithImage:[self imageWithSystemIconNamed:iconName]];
-    iconView.contentMode = UIViewContentModeScaleAspectFit;
-    self.hud.customView = iconView;
-
-    [self.hud hideAnimated:YES afterDelay:delay];
+    // Same box as the playlist downloader (goes away by itself)
+    [YTMUDownloadPanel showMessage:text details:nil symbol:iconName];
+    self.panel = nil;
 }
 
 - (void)logCallback:(long)executionId :(int)level :(NSString*)message {
@@ -351,48 +353,26 @@ static NSUInteger YTMUFindBox(const uint8_t *bytes, NSUInteger start, NSUInteger
         return;
 
     double percentage = MIN(1.0, (timeInMilliseconds / 1000.0) / (double)self.duration);
-
-    if (self.hud && self.hud.mode == MBProgressHUDModeAnnularDeterminate) {
-        self.hud.progress = percentage;
-        self.hud.detailsLabel.text = [NSString stringWithFormat:@"%d%%", (int)(percentage * 100)];
-        [self.hud.button setTitle:LOC(@"CANCEL") forState:UIControlStateNormal];
-        [self.hud.button removeTarget:self action:@selector(cancelDownloading:) forControlEvents:UIControlEventTouchUpInside];
-        [self.hud.button addTarget:self action:@selector(cancelDownloading:) forControlEvents:UIControlEventTouchUpInside];
-
-        UIView *buttonSuperview = self.hud.button.superview;
-        if (![buttonSuperview viewWithTag:998]) {
-            UIButton *cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
-            [cancelButton setTag:998];
-            UIImage *cancelImage = [[UIImage systemImageNamed:@"x.circle"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-            [cancelButton setImage:cancelImage forState:UIControlStateNormal];
-            [cancelButton setTintColor:[[UIColor labelColor] colorWithAlphaComponent:0.7]];
-            [cancelButton addTarget:self action:@selector(cancelHUD:) forControlEvents:UIControlEventTouchUpInside];
-            [buttonSuperview addSubview:cancelButton];
-
-            cancelButton.translatesAutoresizingMaskIntoConstraints = NO;
-            [NSLayoutConstraint activateConstraints:@[
-                [cancelButton.topAnchor constraintEqualToAnchor:buttonSuperview.topAnchor constant:5.0],
-                [cancelButton.leadingAnchor constraintEqualToAnchor:buttonSuperview.leadingAnchor constant:5.0],
-                [cancelButton.widthAnchor constraintEqualToConstant:17.0],
-                [cancelButton.heightAnchor constraintEqualToConstant:17.0]
-            ]];
-        }
+    YTMUDownloadPanel *panel = self.panel;
+    // Only while it's downloading (not converting / lyrics)
+    if (panel && !isnan(panel.progress) && panel.progress >= 0) {
+        panel.progress = (float)percentage;
+        panel.details = [NSString stringWithFormat:@"%d%%", (int)(percentage * 100)];
     }
 }
 
 - (void)cancelDownloading:(UIButton *)sender {
+    self.panel.details = @"Cancelling…";
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [MobileFFmpeg cancel];
     });
 }
 
-- (void)cancelHUD:(UIButton *)sender {
-    [self.hud hideAnimated:YES];
-}
-
 - (void)downloadImage:(NSURL *)link {
-    self.hud = [MBProgressHUD showHUDAddedTo:[UIApplication sharedApplication].keyWindow animated:YES];
-    self.hud.mode = MBProgressHUDModeIndeterminate;
+    YTMUDownloadPanel *panel = [YTMUDownloadPanel showCentered];
+    panel.title = LOC(@"DOWNLOADING");
+    panel.progress = -1;
+    self.panel = panel;
 
     // Fetch off the main thread, save + show result on it
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{

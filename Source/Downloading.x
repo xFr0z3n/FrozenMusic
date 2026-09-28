@@ -92,6 +92,14 @@ static NSString *YTMUManifestURL(id playerResponse) {
     return YTMUSafeString(streamingData, @"hlsManifestURL");
 }
 
+static NSString *YTMUDirectAudioURL(id streamingData);
+
+// Direct AAC stream of a player response (songs without an HLS stream)
+static NSString *YTMUResponseDirectAudioURL(id playerResponse) {
+    id playerData = YTMUSafeValue(playerResponse, @"playerData");
+    return YTMUDirectAudioURL(YTMUSafeValue(playerData, @"streamingData"));
+}
+
 // Walks outwards from the Now Playing screen (breadth-first, limited) until it
 // finds a player response that has a stream manifest.
 static YTMUTrackInfo *YTMUFindTrack(NSArray *startObjects) {
@@ -136,7 +144,7 @@ static YTMUTrackInfo *YTMUFindTrack(NSArray *startObjects) {
         inspected++;
 
         if ([object isKindOfClass:responseClass]) {
-            if (YTMUManifestURL(object).length > 0) {
+            if (YTMUManifestURL(object).length > 0 || YTMUResponseDirectAudioURL(object).length > 0) {
                 YTMUTrackInfo *info = [YTMUTrackInfo new];
                 info.playerResponse = object;
                 info.playerViewController = lastPlayerVC;
@@ -190,8 +198,45 @@ static void YTMUAddPlayerScreens(UIViewController *vc, NSMutableArray *output, N
     YTMUAddPlayerScreens(vc.presentedViewController, output, depth + 1);
 }
 
+// Number property of a stream format (itag, bitrate), 0 if it has none
+static long long YTMUFormatNumber(id format, NSString *key) {
+    if (!format || ![format respondsToSelector:NSSelectorFromString(key)])
+        return 0;
+    @try {
+        id value = [format valueForKey:key];
+        return [value respondsToSelector:@selector(longLongValue)] ? [value longLongValue] : 0;
+    } @catch (__unused NSException *exception) {
+        return 0;
+    }
+}
+
+// Best AAC audio stream (audio/mp4, direct URL, no signature needed) of a player response's
+// streaming data, nil if there's none
+static NSString *YTMUDirectAudioURL(id streamingData) {
+    id formats = YTMUSafeValue(streamingData, @"adaptiveFormatsArray") ?: YTMUSafeValue(streamingData, @"adaptiveFormats");
+    if (![formats conformsToProtocol:@protocol(NSFastEnumeration)])
+        return nil;
+    NSString *best = nil;
+    long long bestRate = -1;
+    for (id format in (id<NSFastEnumeration>)formats) {
+        NSString *mime = YTMUSafeString(format, @"mimeType");
+        if (![mime.lowercaseString hasPrefix:@"audio/mp4"])
+            continue;
+        NSString *url = YTMUSafeString(format, @"URL") ?: YTMUSafeString(format, @"url");
+        if (![url hasPrefix:@"https://"])
+            continue;
+        long long rate = YTMUFormatNumber(format, @"bitrate");
+        if (rate > bestRate) {
+            bestRate = rate;
+            best = url;
+        }
+    }
+    return best;
+}
+
 // Same kind of search as the single-song download, but it only accepts the
-// stream of `videoID`. Returns @{hls, author} or @{diag} describing what it saw.
+// stream of `videoID`. Returns @{hls, author, title}, @{audio (direct URL), author, title}
+// or @{diag} describing what it saw.
 NSDictionary *YTMUStreamInfoForVideo(NSArray *startObjects, NSString *videoID) {
     Class wrapperClass = NSClassFromString(@"YTPlayerResponse");
     Class protoClass = NSClassFromString(@"YTIPlayerResponse");
@@ -254,6 +299,22 @@ NSDictionary *YTMUStreamInfoForVideo(NSArray *startObjects, NSString *videoID) {
                 if (title)
                     result[@"title"] = title;
                 return result;
+            }
+            // No HLS stream for this song (some tracks only have direct streams): its best
+            // direct AAC audio (audio/mp4) instead
+            if (!hls.length && [responseID isEqualToString:videoID]) {
+                NSString *direct = YTMUDirectAudioURL(YTMUSafeValue(proto, @"streamingData"));
+                if (direct.length) {
+                    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+                    result[@"audio"] = direct;
+                    NSString *author = YTMUSafeString(details, @"author");
+                    if (author)
+                        result[@"author"] = author;
+                    NSString *title = YTMUSafeString(details, @"title");
+                    if (title)
+                        result[@"title"] = title;
+                    return result;
+                }
             }
             NSString *note = [NSString stringWithFormat:@"%@%@", responseID.length ? responseID : @"?", hls.length ? @"+hls" : @"-hls"];
             if (![seen containsObject:note] && seen.count < 6)
@@ -823,6 +884,9 @@ void YTMUPauseAppPlayer(void) {
     // Network work off the main thread (the old code froze the UI here)
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *audioURL = manifestURL ? [self ytmu_audioURLFromManifest:[NSURL URLWithString:manifestURL]] : nil;
+        // No HLS stream (some songs): the direct AAC stream
+        if (!audioURL.length)
+            audioURL = YTMUResponseDirectAudioURL(info.playerResponse);
         NSData *coverData = thumbnailURL ? [NSData dataWithContentsOfURL:[NSURL URLWithString:thumbnailURL]] : nil;
 
         dispatch_async(dispatch_get_main_queue(), ^{

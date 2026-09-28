@@ -520,6 +520,16 @@ static void YTMUStyleLyricsPill(UIButton *button, BOOL active) {
 
 - (void)showLyrics:(YTMULyrics *)lyrics {
     self.lyrics = lyrics;
+    // Words without timing: a synced version is looked for, and shown when it turns up
+    if (lyrics && !lyrics.synced && self.track) {
+        YTMUOfflineTrack *track = self.track;
+        [YTMULyrics findSyncedVersionForTrack:track completion:^(YTMULyrics *synced) {
+            if (self.track != track || self.lyrics.synced || self.selecting || self.showsTranslation)
+                return;
+            self.didInitialScroll = NO;
+            [self showLyrics:synced];
+        }];
+    }
     NSString *language = [lyrics languageCode];
     NSString *device = [YTMULyrics deviceLanguageCode];
     self.foreignLyrics = language.length >= 2 && device.length >= 2 &&

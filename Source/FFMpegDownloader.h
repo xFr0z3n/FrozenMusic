@@ -8,8 +8,10 @@
 #import "Utils/MBProgressHUD/MBProgressHUD.h"
 #import "Headers/Localization.h"
 
+@class YTMUDownloadPanel;
+
 @interface FFMpegDownloader : NSObject <LogDelegate, StatisticsDelegate>
-@property (nonatomic, strong) MBProgressHUD *hud;
+@property (nonatomic, weak) YTMUDownloadPanel *panel; // progress box (Downloads tab style, OLED aware)
 @property (nonatomic, strong) NSString *tempName;
 @property (nonatomic, strong) NSString *mediaName;
 @property (nonatomic) NSInteger duration;

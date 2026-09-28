@@ -24,6 +24,9 @@
 + (YTMULyrics *)savedLyricsForTrack:(YTMUOfflineTrack *)track;
 // Checked before and has no lyrics (answers without asking again)
 + (BOOL)isKnownWithoutLyrics:(YTMUOfflineTrack *)track;
+// Lyrics without timing: looks for a synced version (online, or the same song saved elsewhere)
+// once per song and launch, saves it and hands it over (main queue). Nothing if there's none.
++ (void)findSyncedVersionForTrack:(YTMUOfflineTrack *)track completion:(void (^)(YTMULyrics *lyrics))completion;
 
 // Language the lyrics are in (nil if unsure) and the device language
 - (NSString *)languageCode;
