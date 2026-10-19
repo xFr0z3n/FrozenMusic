@@ -106,7 +106,6 @@ static NSString *gLastTrackKey = nil;
 static NSInteger gClearToken = 0;
 static NSInteger gArtToken = 0;   // debounce token for artwork uploads
 static UIImage *gPendingArtwork = nil;
-static NSTimeInterval gLastScrubPush = 0; // throttle for scrub re-pushes
 
 static void YTMUPushPresence(void);
 static BOOL gSourceOffline = NO;        // the song comes from the offline player
