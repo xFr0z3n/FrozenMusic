@@ -2,6 +2,10 @@
 #import <UIKit/UIKit.h>
 #import <CommonCrypto/CommonCrypto.h>
 #import "Prefs/FrozenDiscordConfig.h"
+#import "Offline/YTMUOfflinePlayer.h"
+
+// Downloading.x: what YTM's player really is at (position, length, title, channel)
+FOUNDATION_EXPORT BOOL YTMUAppPlayerState(double *elapsed, double *duration, NSString **title, NSString **artist);
 
 // Build secrets: placeholders substituted by GitHub Actions at build time, never commit real values.
 // Values set in the app (FrozenMusic > Discord RPC) override them one by one.
@@ -102,9 +106,12 @@ static NSString *gLastTrackKey = nil;
 static NSInteger gClearToken = 0;
 static NSInteger gArtToken = 0;   // debounce token for artwork uploads
 static UIImage *gPendingArtwork = nil;
-static NSTimeInterval gLastScrubPush = 0; // throttle for scrub re-pushes
 
 static void YTMUPushPresence(void);
+static BOOL gSourceOffline = NO;        // the song comes from the offline player
+static NSTimeInterval gLastPushTime = 0; // last update sent to Discord
+static BOOL gPushPending = NO;
+static NSInteger gLiveMismatches = 0;    // player ticks with another song than the one shown
 
 #pragma mark - Small helpers
 
@@ -364,17 +371,17 @@ static void YTMUStoreAssetKey(NSString *trackKey, NSString *assetKey) {
                startEpoch:(NSTimeInterval)startEpoch {
     if (!_identified) { [self connect]; return; } // READY/RESUMED re-pushes for us
 
-    NSTimeInterval end = startEpoch + durationSec;
+    // Without a known length only the start goes out (Discord counts up instead of ending early)
+    NSMutableDictionary *timestamps = [@{ @"start": @((long long)llround(startEpoch * 1000)) } mutableCopy];
+    if (durationSec > 0)
+        timestamps[@"end"] = @((long long)llround((startEpoch + durationSec) * 1000));
     NSMutableDictionary *activity = [@{
         @"name": @"YouTube Music",
         @"type": @(2),
         @"details": title ?: @"",
         @"state": artist ?: @"",
         @"application_id": kDiscordAppID,
-        @"timestamps": @{
-            @"start": @((long long)(startEpoch * 1000)),
-            @"end": @((long long)(end * 1000))
-        }
+        @"timestamps": timestamps
     } mutableCopy];
 
     if (imageKey.length > 0) {
@@ -458,14 +465,107 @@ static void YTMUStoreAssetKey(NSString *trackKey, NSString *assetKey) {
 
 #pragma mark - Presence push (reads shared state)
 
+// Sends what's playing now (or clears it when nothing is)
+static void YTMUSendPresenceNow(void) {
+    gLastPushTime = [[NSDate date] timeIntervalSince1970];
+    if (gPresenceActive) {
+        [[YTMUDiscordGateway shared] sendActivityTitle:gTrackTitle
+                                                artist:gTrackArtist
+                                                 album:gTrackAlbum
+                                              imageKey:gTrackImageKey
+                                           durationSec:gTrackDuration
+                                            startEpoch:gTrackStartEpoch];
+    } else {
+        [[YTMUDiscordGateway shared] clearPresence];
+    }
+}
+
+// Discord quietly drops presence updates that come too fast (about 5 per 20 s), which could
+// leave an earlier song showing after a few skips. So one update every 4 s at most, and the
+// newest state always goes out when the time is up.
+static const NSTimeInterval kPresenceInterval = 4.0;
+
 static void YTMUPushPresence(void) {
-    if (!gPresenceActive) return;
-    [[YTMUDiscordGateway shared] sendActivityTitle:gTrackTitle
-                                            artist:gTrackArtist
-                                             album:gTrackAlbum
-                                          imageKey:gTrackImageKey
-                                       durationSec:gTrackDuration
-                                        startEpoch:gTrackStartEpoch];
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            YTMUPushPresence();
+        });
+        return;
+    }
+    NSTimeInterval wait = gLastPushTime + kPresenceInterval - [[NSDate date] timeIntervalSince1970];
+    if (wait <= 0) {
+        YTMUSendPresenceNow();
+        return;
+    }
+    if (gPushPending)
+        return;
+    gPushPending = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        gPushPending = NO;
+        YTMUSendPresenceNow();
+    });
+}
+
+// Same song? Letters and digits compared (the lock screen and the player can write a title
+// a little differently)
+static NSString *YTMUTitleLetters(NSString *text) {
+    NSString *folded = [text ?: @"" stringByFoldingWithOptions:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch | NSWidthInsensitiveSearch locale:nil];
+    NSMutableString *key = [NSMutableString string];
+    NSCharacterSet *alnum = [NSCharacterSet alphanumericCharacterSet];
+    [folded enumerateSubstringsInRange:NSMakeRange(0, folded.length) options:NSStringEnumerationByComposedCharacterSequences usingBlock:^(NSString *character, NSRange range, NSRange enclosing, BOOL *stop) {
+        if ([character rangeOfCharacterFromSet:alnum].location != NSNotFound)
+            [key appendString:character];
+    }];
+    return key;
+}
+
+static BOOL YTMUSameTitle(NSString *a, NSString *b) {
+    NSString *x = YTMUTitleLetters(a), *y = YTMUTitleLetters(b);
+    if (!x.length || !y.length)
+        return [a ?: @"" isEqualToString:b ?: @""];
+    if ([x isEqualToString:y])
+        return YES;
+    return MIN(x.length, y.length) >= 4 && ([x containsString:y] || [y containsString:x]);
+}
+
+// Where the playing song really is (position, length), from the player that plays it.
+// *title / *artist: the song that player has loaded. NO = unknown.
+static BOOL YTMULivePlayer(double *elapsed, double *duration, NSString **title, NSString **artist) {
+    double e = 0, d = 0;
+    NSString *t = nil, *a = nil;
+    if (gSourceOffline) {
+        YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
+        if (!player.currentTrack)
+            return NO;
+        e = player.currentTime;
+        d = player.duration > 0 ? player.duration : player.currentTrack.duration;
+        t = player.currentTrack.title;
+        a = player.currentTrack.artist;
+    } else if (!YTMUAppPlayerState(&e, &d, &t, &a)) {
+        return NO;
+    }
+    if (!(d > 0) || isnan(e) || e < 0)
+        return NO;
+    *elapsed = MIN(e, d);
+    *duration = d;
+    if (title)
+        *title = t;
+    if (artist)
+        *artist = a;
+    return YES;
+}
+
+// Position and length of the song shown, when its player has it loaded right now
+static BOOL YTMULiveTiming(NSString *shownTitle, double *elapsed, double *duration) {
+    double e = 0, d = 0;
+    NSString *t = nil;
+    if (!YTMULivePlayer(&e, &d, &t, NULL))
+        return NO;
+    if (t.length && shownTitle.length && !YTMUSameTitle(t, shownTitle))
+        return NO; // the player is already on another song
+    *elapsed = e;
+    *duration = d;
+    return YES;
 }
 
 #pragma mark - Artwork upload + external asset registration
@@ -596,27 +696,40 @@ static void YTMUScheduleArtwork(UIImage *artwork, NSString *trackKey) {
         return;
     }
 
+    BOOL offline = YTMUOfflinePlayerIsWritingNowPlaying();
     dispatch_async(dispatch_get_main_queue(), ^{
         gClearToken++; // cancel any pending debounced clear
+        gSourceOffline = offline;
+        gLiveMismatches = 0;
 
         NSString *trackKey = [NSString stringWithFormat:@"%@|%@", title, artist];
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        // The player's own position / length when it has this song loaded: the lock-screen info
+        // can still carry the previous song's length (or none) right after a change
+        double position = elapsed, length = duration;
+        double liveElapsed = 0, liveDuration = 0;
+        if (YTMULiveTiming(title, &liveElapsed, &liveDuration)) {
+            position = liveElapsed;
+            length = liveDuration;
+        }
 
-        if (![trackKey isEqualToString:gLastTrackKey]) {
+        if (![trackKey isEqualToString:gLastTrackKey] || !gPresenceActive) {
+            BOOL sameTrack = [trackKey isEqualToString:gLastTrackKey];
             gLastTrackKey = trackKey;
             gTrackTitle = title;
             gTrackArtist = artist;
             gTrackAlbum = album;
-            gTrackDuration = duration;
-            gTrackStartEpoch = now - elapsed;
+            gTrackDuration = length;
+            gTrackStartEpoch = now - position;
             gPresenceActive = YES;
 
             // Cache hit -> art shows instantly with the very first push, no upload at all
-            gTrackImageKey = YTMUCachedAssetKey(trackKey);
+            if (!sameTrack || !gTrackImageKey)
+                gTrackImageKey = YTMUCachedAssetKey(trackKey);
 
             NSLog(@"[YTMU] NEW TRACK: %@ — %@%@", title, artist,
                   gTrackImageKey ? @" (art cached)" : @"");
-            YTMUPushPresence();                              // instant text+progress (+art on cache hit)
+            YTMUPushPresence();                              // text + progress (+art on cache hit)
             if (!gTrackImageKey) {
                 YTMUScheduleArtwork(artworkImage, trackKey); // debounced art only when needed
             }
@@ -624,18 +737,17 @@ static void YTMUScheduleArtwork(UIImage *artwork, NSString *trackKey) {
             if (!gTrackImageKey && artworkImage) {
                 YTMUScheduleArtwork(artworkImage, trackKey);
             }
-            NSTimeInterval expected = now - gTrackStartEpoch;
-            if (fabs(elapsed - expected) > 6.0) {
-                // Throttle: buffering at track start can fire this several times in a burst
-                if (now - gLastScrubPush > 2.0) {
-                    NSLog(@"[YTMU] scrub/buffer resync");
-                    gLastScrubPush = now;
-                    gTrackStartEpoch = now - elapsed;
-                    YTMUPushPresence();
-                } else {
-                    gTrackStartEpoch = now - elapsed; // resync silently, no extra push
-                }
+            BOOL changed = NO;
+            if (length > 0 && fabs(length - gTrackDuration) > 1.0) {
+                gTrackDuration = length; // the real length arrived
+                changed = YES;
             }
+            if (fabs(position - (now - gTrackStartEpoch)) > 2.0) {
+                gTrackStartEpoch = now - position; // seek / buffering / replay
+                changed = YES;
+            }
+            if (changed)
+                YTMUPushPresence();
         }
     });
 }
@@ -652,13 +764,61 @@ static void YTMUScheduleArtwork(UIImage *artwork, NSString *trackKey) {
                 gLastTrackKey = nil;
                 gTrackImageKey = nil;
                 gPendingArtwork = nil;
-                [[YTMUDiscordGateway shared] clearPresence];
+                YTMUPushPresence();
             }
         });
     });
 }
 
 %end
+
+#pragma mark - Keeping the shown song right
+
+// Every 2 s while something shows: length and position follow the player (a wrong length
+// made Discord end the song early). If the player has been on another song for a while and
+// the lock-screen info never said so, that song is shown.
+static void YTMUPresenceTick(void) {
+    if (!gPresenceActive || !YTMUDiscordActive())
+        return;
+    double e = 0, d = 0;
+    NSString *liveTitle = nil, *liveArtist = nil;
+    if (!YTMULivePlayer(&e, &d, &liveTitle, &liveArtist))
+        return;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+
+    if (liveTitle.length && gTrackTitle.length && !YTMUSameTitle(liveTitle, gTrackTitle)) {
+        if (++gLiveMismatches < 3)
+            return; // a song change in progress: the lock-screen info usually follows
+        gLiveMismatches = 0;
+        NSString *artist = liveArtist ?: @"";
+        if ([artist hasSuffix:@" - Topic"])
+            artist = [artist substringToIndex:artist.length - 8];
+        NSString *trackKey = [NSString stringWithFormat:@"%@|%@", liveTitle, artist];
+        gLastTrackKey = trackKey;
+        gTrackTitle = liveTitle;
+        gTrackArtist = artist;
+        gTrackAlbum = nil;
+        gTrackDuration = d;
+        gTrackStartEpoch = now - e;
+        gTrackImageKey = YTMUCachedAssetKey(trackKey);
+        NSLog(@"[YTMU] player is on another song, showing: %@", liveTitle);
+        YTMUPushPresence();
+        return;
+    }
+    gLiveMismatches = 0;
+
+    BOOL changed = NO;
+    if (fabs(d - gTrackDuration) > 1.0) {
+        gTrackDuration = d;
+        changed = YES;
+    }
+    if (fabs(e - (now - gTrackStartEpoch)) > 2.0) {
+        gTrackStartEpoch = now - e;
+        changed = YES;
+    }
+    if (changed)
+        YTMUPushPresence();
+}
 
 #pragma mark - App lifecycle: clear presence on termination
 
@@ -671,6 +831,14 @@ static void YTMUClearOnExit(void) {
 }
 
 %ctor {
+    static dispatch_source_t presenceTimer;
+    presenceTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(presenceTimer, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), 2 * NSEC_PER_SEC, NSEC_PER_SEC / 2);
+    dispatch_source_set_event_handler(presenceTimer, ^{
+        YTMUPresenceTick();
+    });
+    dispatch_resume(presenceTimer);
+
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillTerminateNotification
                                                       object:nil queue:nil
                                                   usingBlock:^(NSNotification *note) {
