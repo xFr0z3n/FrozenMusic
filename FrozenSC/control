@@ -1,0 +1,9 @@
+Package: com.fr0z3n.frozenscdiscord
+Name: FrozenSC Discord RPC
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Discord Rich Presence for SoundCloud (FrozenSC add-on)
+Maintainer: fr0z3n
+Author: fr0z3n
+Section: Tweaks
+Depends: mobilesubstrate (>= 0.9.5000)

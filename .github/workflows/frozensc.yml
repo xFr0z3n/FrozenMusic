@@ -1,0 +1,121 @@
+name: Build FrozenSC Discord RPC
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: "URL to the decrypted SoundCloud IPA file"
+        default: ""
+        required: true
+        type: string
+      frozensc_dylib_url:
+        description: "URL to your existing FrozenSC (NexaSC) .dylib to inject alongside"
+        default: ""
+        required: true
+        type: string
+      display_name:
+        description: "App Name (Optional)"
+        default: "SoundCloud"
+        required: true
+        type: string
+      bundle_id:
+        description: "BundleID (Optional)"
+        default: "com.soundcloud.TouchApp"
+        required: true
+        type: string
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: Build FrozenSC Discord RPC
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Main
+        uses: actions/checkout@v6.0.2
+        with:
+          path: main
+          submodules: recursive
+      - name: Hide sensitive inputs
+        uses: levibostian/action-hide-sensitive-inputs@v1
+        with:
+          exclude_inputs: bundle_id,display_name
+      - name: Validate IPA URL
+        run: |
+          curl -L -r 0-1023 -o sample.part "${{ inputs.ipa_url }}" > /dev/null 2>&1
+          file_type=$(file --mime-type -b sample.part)
+          if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
+            echo "::error::Validation failed: The file is not a valid IPA file. Detected type: $file_type."
+            exit 1
+          fi
+      - name: Install Dependencies
+        run: brew install make ldid
+      - name: Set PATH environment variables
+        run: |
+          echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
+          echo "THEOS=${{ github.workspace }}/theos" >> $GITHUB_ENV
+      - name: Cache Theos
+        id: theos
+        uses: actions/cache@v5.0.3
+        env:
+          cache-name: theos_cache_344ee59
+        with:
+          path: theos/
+          key: ${{ env.cache-name }}
+          restore-keys: ${{ env.cache-name }}
+      - name: Setup Theos
+        if: steps.theos.outputs.cache-hit != 'true'
+        uses: actions/checkout@v6.0.2
+        with:
+          repository: theos/theos
+          ref: 344ee5925df036dbd1312b783ad5a00d153c2445
+          path: theos
+          submodules: recursive
+      - name: Download iOS SDK
+        if: steps.theos.outputs.cache-hit != 'true'
+        run: |
+          git clone --quiet -n --depth=1 --filter=tree:0 https://github.com/theos/sdks.git
+          cd sdks
+          git sparse-checkout set --no-cone iPhoneOS16.5.sdk
+          git checkout
+          mv *.sdk $THEOS/sdks
+      - name: Install cyan
+        run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+      - name: Download SoundCloud
+        run: wget "${{ inputs.ipa_url }}" --no-verbose -O sc.ipa
+      - name: Download FrozenSC dylib
+        run: wget "${{ inputs.frozensc_dylib_url }}" --no-verbose -O NexaSC.dylib
+      - name: Inject secrets
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_APP_ID: ${{ secrets.DISCORD_APP_ID }}
+          NEXTCLOUD_WEBDAV_URL: ${{ secrets.NEXTCLOUD_WEBDAV_URL }}
+          NEXTCLOUD_USER: ${{ secrets.NEXTCLOUD_USER }}
+          NEXTCLOUD_PASS: ${{ secrets.NEXTCLOUD_PASS }}
+          NEXTCLOUD_PUBLIC_URL: ${{ secrets.NEXTCLOUD_PUBLIC_URL }}
+        run: |
+          sed -i '' "s|__DISCORD_TOKEN__|$DISCORD_TOKEN|g" main/FrozenSC/Source/DiscordRPC.x
+          sed -i '' "s|__DISCORD_APP_ID__|$DISCORD_APP_ID|g" main/FrozenSC/Source/DiscordRPC.x
+          sed -i '' "s|__NEXTCLOUD_WEBDAV_URL__|$NEXTCLOUD_WEBDAV_URL|g" main/FrozenSC/Source/DiscordRPC.x
+          sed -i '' "s|__NEXTCLOUD_USER__|$NEXTCLOUD_USER|g" main/FrozenSC/Source/DiscordRPC.x
+          sed -i '' "s|__NEXTCLOUD_PASS__|$NEXTCLOUD_PASS|g" main/FrozenSC/Source/DiscordRPC.x
+          sed -i '' "s|__NEXTCLOUD_PUBLIC_URL__|$NEXTCLOUD_PUBLIC_URL|g" main/FrozenSC/Source/DiscordRPC.x
+      - name: Build Tweak for Sideloading
+        run: |
+          cd main/FrozenSC
+          make clean package DEBUG=0 FINALPACKAGE=1 SIDELOADING=1
+          mv packages/*.deb "$GITHUB_WORKSPACE/frozenscdiscord.deb"
+      - name: Inject tweaks into provided IPA
+        run: |
+          cyan -i sc.ipa -o SoundCloud.ipa -uwsf NexaSC.dylib frozenscdiscord.deb \
+            -n "${{ inputs.display_name }}" -b ${{ inputs.bundle_id }}
+      - name: Create Release
+        uses: softprops/action-gh-release@v2.5.0
+        with:
+          name: FrozenSC Discord RPC (${{ github.run_number }})
+          tag_name: frozensc-${{ github.run_number }}
+          files: SoundCloud.ipa
+          draft: true
+      - name: Output Release URL
+        run: echo "::notice::Release available at: https://github.com/${{ github.repository }}/releases"
