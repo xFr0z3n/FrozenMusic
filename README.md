@@ -5,7 +5,7 @@
 <h1 align="center">FrozenMusic</h1>
 
 <p align="center">
-  An iOS tweak for YouTube Music that downloads playlists, albums and songs for offline listening, with a player built to match the original app.
+  An iOS tweak for YouTube Music that downloads playlists, albums, songs, lyrics and other metadata for offline listening, with a player built to match the original app.
 </p>
 
 <p align="center">
