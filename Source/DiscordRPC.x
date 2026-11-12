@@ -5,7 +5,7 @@
 #import "Offline/YTMUOfflinePlayer.h"
 
 // Downloading.x: what YTM's player really is at (position, length, title, channel)
-FOUNDATION_EXPORT BOOL YTMUAppPlayerState(double *elapsed, double *duration, NSString **title, NSString **artist);
+FOUNDATION_EXPORT BOOL YTMUAppPlayerState(double *elapsed, double *duration, NSString **title, NSString **artist, NSString **videoID);
 
 // Build secrets: placeholders substituted by GitHub Actions at build time, never commit real values.
 // Values set in the app (FrozenMusic > Discord RPC) override them one by one.
@@ -96,6 +96,7 @@ static const NSUInteger kAssetCacheMaxEntries = 300;
 
 // Shared presence state — mutated only on the main queue
 static NSString *gTrackTitle = nil;
+static NSString *gTrackVideoID = nil; // YouTube video ID of the song shown, when known
 static NSString *gTrackArtist = nil;
 static NSString *gTrackAlbum = nil;
 static double gTrackDuration = 0;
@@ -171,7 +172,8 @@ static void YTMUStoreAssetKey(NSString *trackKey, NSString *assetKey) {
                     album:(NSString *)album
                  imageKey:(NSString *)imageKey
               durationSec:(double)durationSec
-               startEpoch:(NSTimeInterval)startEpoch;
+               startEpoch:(NSTimeInterval)startEpoch
+                  songURL:(NSString *)songURL;
 - (void)clearPresence;
 @property (nonatomic, readonly) BOOL identified;
 @end
@@ -368,7 +370,8 @@ static void YTMUStoreAssetKey(NSString *trackKey, NSString *assetKey) {
                     album:(NSString *)album
                  imageKey:(NSString *)imageKey
               durationSec:(double)durationSec
-               startEpoch:(NSTimeInterval)startEpoch {
+               startEpoch:(NSTimeInterval)startEpoch
+                  songURL:(NSString *)songURL {
     if (!_identified) { [self connect]; return; } // READY/RESUMED re-pushes for us
 
     // Without a known length only the start goes out (Discord counts up instead of ending early)
@@ -391,6 +394,12 @@ static void YTMUStoreAssetKey(NSString *trackKey, NSString *assetKey) {
             assets[@"large_text"] = album;
         }
         activity[@"assets"] = assets;
+    }
+
+    // "Play on YouTube Music" button (others see it; Discord never shows you your own buttons)
+    if (songURL.length) {
+        activity[@"buttons"] = @[ @"Play on YouTube Music" ];
+        activity[@"metadata"] = @{ @"button_urls": @[ songURL ] };
     }
 
     [self send:@{
@@ -465,6 +474,23 @@ static void YTMUStoreAssetKey(NSString *trackKey, NSString *assetKey) {
 
 #pragma mark - Presence push (reads shared state)
 
+// Link for the button: the song itself on YouTube Music when its video ID is known, else a
+// YouTube Music search for title + artist
+static NSString *YTMUSongURL(NSString *title, NSString *artist, NSString *videoID) {
+    NSCharacterSet *idCharacters = [[NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"] invertedSet];
+    if (videoID.length >= 6 && videoID.length <= 64 && [videoID rangeOfCharacterFromSet:idCharacters].location == NSNotFound)
+        return [@"https://music.youtube.com/watch?v=" stringByAppendingString:videoID];
+    NSString *query = [[NSString stringWithFormat:@"%@ %@", title ?: @"", artist ?: @""]
+                       stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!query.length)
+        return nil;
+    NSMutableCharacterSet *allowed = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
+    [allowed removeCharactersInString:@"&+=#?/"];
+    NSString *encoded = [query stringByAddingPercentEncodingWithAllowedCharacters:allowed];
+    NSString *url = [@"https://music.youtube.com/search?q=" stringByAppendingString:encoded ?: @""];
+    return url.length <= 512 ? url : nil; // Discord's limit for button links
+}
+
 // Sends what's playing now (or clears it when nothing is)
 static void YTMUSendPresenceNow(void) {
     gLastPushTime = [[NSDate date] timeIntervalSince1970];
@@ -474,7 +500,8 @@ static void YTMUSendPresenceNow(void) {
                                                  album:gTrackAlbum
                                               imageKey:gTrackImageKey
                                            durationSec:gTrackDuration
-                                            startEpoch:gTrackStartEpoch];
+                                            startEpoch:gTrackStartEpoch
+                                               songURL:YTMUSongURL(gTrackTitle, gTrackArtist, gTrackVideoID)];
     } else {
         [[YTMUDiscordGateway shared] clearPresence];
     }
@@ -530,9 +557,9 @@ static BOOL YTMUSameTitle(NSString *a, NSString *b) {
 
 // Where the playing song really is (position, length), from the player that plays it.
 // *title / *artist: the song that player has loaded. NO = unknown.
-static BOOL YTMULivePlayer(double *elapsed, double *duration, NSString **title, NSString **artist) {
+static BOOL YTMULivePlayer(double *elapsed, double *duration, NSString **title, NSString **artist, NSString **videoID) {
     double e = 0, d = 0;
-    NSString *t = nil, *a = nil;
+    NSString *t = nil, *a = nil, *v = nil;
     if (gSourceOffline) {
         YTMUOfflinePlayer *player = [YTMUOfflinePlayer shared];
         if (!player.currentTrack)
@@ -541,7 +568,8 @@ static BOOL YTMULivePlayer(double *elapsed, double *duration, NSString **title, 
         d = player.duration > 0 ? player.duration : player.currentTrack.duration;
         t = player.currentTrack.title;
         a = player.currentTrack.artist;
-    } else if (!YTMUAppPlayerState(&e, &d, &t, &a)) {
+        v = player.currentTrack.videoID; // from the song's tags (downloaded songs keep their YTM link)
+    } else if (!YTMUAppPlayerState(&e, &d, &t, &a, &v)) {
         return NO;
     }
     if (!(d > 0) || isnan(e) || e < 0)
@@ -552,19 +580,23 @@ static BOOL YTMULivePlayer(double *elapsed, double *duration, NSString **title, 
         *title = t;
     if (artist)
         *artist = a;
+    if (videoID)
+        *videoID = v;
     return YES;
 }
 
 // Position and length of the song shown, when its player has it loaded right now
-static BOOL YTMULiveTiming(NSString *shownTitle, double *elapsed, double *duration) {
+static BOOL YTMULiveTiming(NSString *shownTitle, double *elapsed, double *duration, NSString **videoID) {
     double e = 0, d = 0;
-    NSString *t = nil;
-    if (!YTMULivePlayer(&e, &d, &t, NULL))
+    NSString *t = nil, *v = nil;
+    if (!YTMULivePlayer(&e, &d, &t, NULL, &v))
         return NO;
     if (t.length && shownTitle.length && !YTMUSameTitle(t, shownTitle))
         return NO; // the player is already on another song
     *elapsed = e;
     *duration = d;
+    if (videoID)
+        *videoID = v;
     return YES;
 }
 
@@ -708,7 +740,8 @@ static void YTMUScheduleArtwork(UIImage *artwork, NSString *trackKey) {
         // can still carry the previous song's length (or none) right after a change
         double position = elapsed, length = duration;
         double liveElapsed = 0, liveDuration = 0;
-        if (YTMULiveTiming(title, &liveElapsed, &liveDuration)) {
+        NSString *liveVideoID = nil;
+        if (YTMULiveTiming(title, &liveElapsed, &liveDuration, &liveVideoID)) {
             position = liveElapsed;
             length = liveDuration;
         }
@@ -721,6 +754,7 @@ static void YTMUScheduleArtwork(UIImage *artwork, NSString *trackKey) {
             gTrackAlbum = album;
             gTrackDuration = length;
             gTrackStartEpoch = now - position;
+            gTrackVideoID = liveVideoID;
             gPresenceActive = YES;
 
             // Cache hit -> art shows instantly with the very first push, no upload at all
@@ -738,6 +772,10 @@ static void YTMUScheduleArtwork(UIImage *artwork, NSString *trackKey) {
                 YTMUScheduleArtwork(artworkImage, trackKey);
             }
             BOOL changed = NO;
+            if (liveVideoID.length && ![liveVideoID isEqualToString:gTrackVideoID ?: @""]) {
+                gTrackVideoID = liveVideoID; // the button now opens the song itself
+                changed = YES;
+            }
             if (length > 0 && fabs(length - gTrackDuration) > 1.0) {
                 gTrackDuration = length; // the real length arrived
                 changed = YES;
@@ -763,6 +801,7 @@ static void YTMUScheduleArtwork(UIImage *artwork, NSString *trackKey) {
                 gPresenceActive = NO;
                 gLastTrackKey = nil;
                 gTrackImageKey = nil;
+                gTrackVideoID = nil;
                 gPendingArtwork = nil;
                 YTMUPushPresence();
             }
@@ -782,7 +821,8 @@ static void YTMUPresenceTick(void) {
         return;
     double e = 0, d = 0;
     NSString *liveTitle = nil, *liveArtist = nil;
-    if (!YTMULivePlayer(&e, &d, &liveTitle, &liveArtist))
+    NSString *liveVideoID = nil;
+    if (!YTMULivePlayer(&e, &d, &liveTitle, &liveArtist, &liveVideoID))
         return;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
 
@@ -798,6 +838,7 @@ static void YTMUPresenceTick(void) {
         gTrackTitle = liveTitle;
         gTrackArtist = artist;
         gTrackAlbum = nil;
+        gTrackVideoID = liveVideoID;
         gTrackDuration = d;
         gTrackStartEpoch = now - e;
         gTrackImageKey = YTMUCachedAssetKey(trackKey);
@@ -808,6 +849,10 @@ static void YTMUPresenceTick(void) {
     gLiveMismatches = 0;
 
     BOOL changed = NO;
+    if (liveVideoID.length && ![liveVideoID isEqualToString:gTrackVideoID ?: @""]) {
+        gTrackVideoID = liveVideoID;
+        changed = YES;
+    }
     if (fabs(d - gTrackDuration) > 1.0) {
         gTrackDuration = d;
         changed = YES;
@@ -826,6 +871,7 @@ static void YTMUClearOnExit(void) {
     gPresenceActive = NO;
     gLastTrackKey = nil;
     gTrackImageKey = nil;
+    gTrackVideoID = nil;
     gPendingArtwork = nil;
     [[YTMUDiscordGateway shared] clearPresence];
 }

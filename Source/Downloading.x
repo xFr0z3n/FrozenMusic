@@ -741,8 +741,9 @@ void YTMUPauseAppPlayer(void) {
 }
 
 // What YTM's player is really at right now (Discord Rich Presence keeps its timing on this):
-// position and length in seconds, and the title / channel of the song it has loaded. NO = unknown.
-BOOL YTMUAppPlayerState(double *elapsed, double *duration, NSString **title, NSString **artist) {
+// position and length in seconds, and the title / channel / video ID of the song it has loaded.
+// NO = unknown.
+BOOL YTMUAppPlayerState(double *elapsed, double *duration, NSString **title, NSString **artist, NSString **videoID) {
     YTPlayerViewController *player = ytmuAppPlayer;
     if (![player isKindOfClass:NSClassFromString(@"YTPlayerViewController")])
         return NO;
@@ -759,6 +760,8 @@ BOOL YTMUAppPlayerState(double *elapsed, double *duration, NSString **title, NSS
         *title = YTMUSafeString(details, @"title");
     if (artist)
         *artist = YTMUSafeString(details, @"author");
+    if (videoID)
+        *videoID = YTMUSafeString(details, @"videoId");
     return YES;
 }
 

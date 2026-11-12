@@ -46,6 +46,7 @@
 
 ### Discord Rich Presence
 - Displays the current song, artist, progress and cover art as your Discord status
+- A **Play on YouTube Music** button opens the song for anyone viewing your status
 - Configured in the app under **FrozenMusic → Discord RPC** or through build secrets (see [Discord RPC setup](#discord-rpc-setup))
 - Cover art is uploaded to a WebDAV server of your choice, such as Nextcloud; without one, the status is shown without artwork
 
